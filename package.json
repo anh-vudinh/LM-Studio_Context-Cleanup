@@ -1,0 +1,19 @@
+{
+  "name": "lms-plugin-context-cleanup",
+  "version": "1.0.0",
+  "description": "LM Studio plugin to create memory seeds to carry forward into a new conversation.",
+  "main": "index.js",
+  "scripts": {
+    "dev": "lms dev",
+    "push": "lms push"
+  },
+  "author": "@anhuvdinh",
+  "license": "MIT",
+  "dependencies": {
+    "@lmstudio/sdk": "^1.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "typescript": "^7.0.2"
+  }
+}
