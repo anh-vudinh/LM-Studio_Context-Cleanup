@@ -71,6 +71,26 @@ export async function promptPreprocessor(
                 keepAllMessages === true
             )
         ) {
+            // Repopulate InternalChatID if user purposely and manually deleted
+            // user's message 1
+            if(internalChatID !== "") {
+                
+                const foundHistoryChatID = await promptProcessorScanHistoryForID(messages);
+
+                if(foundHistoryChatID === "") {
+
+                    internalChatID = await promptProcessorRecoverChatID(
+                        lmStudioRootDirectory,
+                        internalChatID,
+                        conversationFileName
+                    );
+
+                    if(internalChatID !== "") {
+                        createNewInternalChatID = true;
+                    }
+                }
+            }
+
             // Read History to check for an InternalChatID
             if (internalChatID === "") {
 
@@ -78,8 +98,8 @@ export async function promptPreprocessor(
 
             }
 
-            // First check of History for InternalChatID returned nothing
-            // Assign an InternalChatID
+            // No InternalChatID is currently available.
+            // Assign a new InternalChatID.
             if (internalChatID ===  "") {
 
                 createNewInternalChatID = true;
@@ -115,12 +135,92 @@ export async function promptPreprocessor(
         }
     }
 
-    return (
-        `${createNewInternalChatID
-            ? `${userText}[ICID: ${internalChatID}] . `
-            : `${userText}`
-        }`
+    return createNewInternalChatID
+        ? `${userText}[ICID: ${internalChatID}] . `
+        : userText;
+}
+
+/**
+ * Try to recover InternalChatID tag if the users deleted it from chat.
+ */
+interface ChatSessionConversationRelationship {
+    internalChatID: string;
+    conversationFile: string;
+}
+
+async function promptProcessorRecoverChatID(
+    rootDirectory: string,
+    internalChatID: string,
+    conversationFileName: string,
+): Promise<string> {
+
+    // If already available in memory, use it.
+    if (internalChatID !== "") {
+        return internalChatID;
+    }
+
+    // Cannot perform relationship lookup without a filename.
+    if (conversationFileName === "") {
+        return "";
+    }
+
+    const conversationDirectory = join(
+        rootDirectory,
+        "conversations",
     );
+
+    const relationshipFile = join(
+        conversationDirectory,
+        "ChatSessionConversationRelationship.json",
+    );
+
+    try {
+
+        const relationshipJson = await readFile(
+            relationshipFile,
+            "utf-8",
+        );
+
+        const relationships: ChatSessionConversationRelationship[] =
+            JSON.parse(relationshipJson);
+
+        // Search from newest to oldest.
+        for (
+            let i = relationships.length - 1;
+            i >= 0;
+            i--
+        ) {
+
+            const relationship = relationships[i];
+
+            if (relationship.conversationFile === conversationFileName) {
+                return relationship.internalChatID;
+            }
+        }
+
+    } catch (error: any) {
+
+        if (error instanceof SyntaxError) {
+
+            console.error(
+                `Relationship file JSON is corrupted: ${error.message}`,
+            );
+
+        } else if (error.code === "ENOENT") {
+
+            console.error(
+                "Relationship file not found.",
+            );
+
+        } else {
+
+            console.error(
+                `Relationship lookup failed: ${error}`,
+            );
+        }
+    }
+
+    return "";
 }
 
 /**

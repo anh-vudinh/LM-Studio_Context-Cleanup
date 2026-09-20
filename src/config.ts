@@ -41,7 +41,7 @@ export const configSchematics = createConfigSchematics()
       int: true,
       min: 1,
     },
-    1
+    3
   )
   .field(
     "keepAllMessages",
@@ -67,7 +67,7 @@ export const configSchematics = createConfigSchematics()
     "boolean",
     {
       displayName: "EXTRA: Maintain an Uncleaned Backup",
-      warning: "Backup saved in .lmstudio\\conversation-backup folder.",
+      warning: "Backup saved in .lmstudio\\conversations-backup folder.",
       hint: "A the moment of enabling creates an exact copy. Subsequent backups only maintain the copy by append in your latest user/assistant turn. "
     },
     false
