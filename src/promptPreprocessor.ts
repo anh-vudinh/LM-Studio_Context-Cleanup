@@ -1,5 +1,14 @@
 import { configSchematics } from "./config";
-import { readFile, writeFile, access, readdir, stat, unlink, mkdir } from "node:fs/promises";
+import { 
+    readFile, 
+    writeFile, 
+    access, 
+    readdir, 
+    stat, 
+    unlink, 
+    mkdir, 
+    rename 
+} from "node:fs/promises";
 import { join, basename } from "node:path";
 import path from "node:path";
 import os from "os";
@@ -9,10 +18,10 @@ import type {
     PromptPreprocessorController,
 } from "@lmstudio/sdk";
 
-let createNewInternalChatID: boolean;
 let conversationFileName = "";
 let internalChatID = "";
 const relationshipsLimit = 15;
+let validatedBackupConversation: any = null;
 
 /**
  * https://github.com/anh-vudinh
@@ -47,6 +56,7 @@ export async function promptPreprocessor(
     const cleanupThinkingOnly = config.get("cleanupThinkingOnly") as boolean;
     const keepAllMessages = config.get("keepAllMessages") as boolean;
     const createBackup = config.get("createBackup") as boolean;
+    let createNewInternalChatID = false;
 
     if (contextCleanup === true) {
         const userMessageCount = messages.filter(
@@ -61,33 +71,26 @@ export async function promptPreprocessor(
                 keepAllMessages === true
             )
         ) {
-            // Read History to see check for an InternalChatID
+            // Read History to check for an InternalChatID
             if (internalChatID === "") {
 
                 internalChatID = await promptProcessorScanHistoryForID(messages);
 
-                if (internalChatID !== "") {
-
-                    createNewInternalChatID = false;
-                }
             }
 
             // First check of History for InternalChatID returned nothing
-            // So we must create one
+            // Assign an InternalChatID
             if (internalChatID ===  "") {
 
                 createNewInternalChatID = true;
+                internalChatID = Date.now().toString();
+
             }
             
-            // Assign an InternalChatID
-            if (createNewInternalChatID === true) {
-
-                internalChatID = Date.now().toString();
-            }
-
             // Use the pre-existing InternalChatID found
             // to find the matching conversation file
             if (conversationFileName === "") {
+
                 conversationFileName = await promptProcessorScanForConversationFile(
                     lmStudioRootDirectory, 
                     internalChatID, 
@@ -97,23 +100,34 @@ export async function promptPreprocessor(
             }
 
             // Final cleanup
-            await startPollingToCleanupConversation(
-                lmStudioRootDirectory, 
-                keepOldestN, 
-                keepNewestN, 
-                cleanupThinkingOnly, 
-                keepAllMessages,
-                createBackup
-            );
+            // Fires off only with a known conversation file, requirement to access the correct file
+            if (conversationFileName !== "") {
+
+                await startPollingToCleanupConversation(
+                    lmStudioRootDirectory, 
+                    keepOldestN, 
+                    keepNewestN, 
+                    cleanupThinkingOnly, 
+                    keepAllMessages,
+                    createBackup
+                );
+            }
         }
     }
 
     return (
-        `${createNewInternalChatID? `${userText}[ICID: ${internalChatID}] IGNORE THIS TAG ` : `${userText}`}`
+        `${createNewInternalChatID
+            ? `${userText}[ICID: ${internalChatID}] . `
+            : `${userText}`
+        }`
     );
 }
 
-
+/**
+ * Scans history for any exisiting ICID.
+ * If used with my persisting-memory plugin, both plugins
+ * have the ability to create an ICID if one doesn't already exist
+ */
 async function promptProcessorScanHistoryForID(
     messages: ChatMessage[],
 ): Promise<string> {
@@ -148,6 +162,16 @@ async function promptProcessorScanHistoryForID(
     return searchedInternalChatID;
 }
 
+/**
+ * Establishes the connection between the current chat session
+ * and it's conversation file. Without a known conversation file
+ * no cleanup functions will be usable.
+ * 1st scan: read relationship in ChatSessionConversationRelationship.json
+ * 2nd scan: check if working directory's suffix is the valid conversation file
+ * 3rd scan: check each conversation file from newest to oldest until
+ * there's a matching hit on matching ICID
+ * 4th scan: during the 3rd scan also check if clientInput = userText of most recent prompt preproccesor
+ */
 async function promptProcessorScanForConversationFile(
     rootDirectory: string,
     internalChatID: string,
@@ -395,6 +419,10 @@ async function promptProcessorScanForConversationFile(
     return foundConversationFileName;
 }
 
+/**
+ * Monitors and controls when the cleanup will initiate
+ * and when it's finished
+ */
 async function startPollingToCleanupConversation(
     rootDirectory: string,
     keepOldestN: number,
@@ -403,6 +431,7 @@ async function startPollingToCleanupConversation(
     keepAllMessages: boolean,
     createBackup: boolean,
 ): Promise<void> {
+
     try {
 
         const conversationDirectory = join(
@@ -426,10 +455,10 @@ async function startPollingToCleanupConversation(
         // Snapshotting assistantLastMessagedAt field (so watcher knows when model is finished with it's response)
         const originalAssistantLastMessagedAt = conversation.assistantLastMessagedAt;
 
-        // This is will help regulate the timings of multiple polling plugins
+        // This will help regulate the timings of multiple polling plugins
         const lockFile = `${conversationFile}.lock`;
 
-        // Safety precaution - remove any abandoned lock file
+        // Safety precaution - remove any abandoned lock file before starting
         try {
 
             await unlink(lockFile);
@@ -487,7 +516,13 @@ async function startPollingToCleanupConversation(
                                 );
                             }
 
-                            cleanupConversation(latestConversation, keepOldestN, keepNewestN, cleanupThinkingOnly, keepAllMessages);
+                            cleanupConversation(
+                                latestConversation, 
+                                keepOldestN, 
+                                keepNewestN, 
+                                cleanupThinkingOnly, 
+                                keepAllMessages
+                            );
 
                             await writeFile(
                                 conversationFile,
@@ -501,11 +536,13 @@ async function startPollingToCleanupConversation(
                                 error,
                             );
                         } finally {
-
+                            
+                            // Removing the lock file as final step so other plugins can now modify a cleaned conversation file
                             await unlink(lockFile);
                         }
 
-                    }, 2000);   // CANNOT BE LESS THAN 2000ms, if you go lower than this something LM Studio is doing on the backend is caching an older version with the seeds still present.
+                    }, 2000);   
+                    // CANNOT BE LESS THAN 2000ms, if you go lower than this something LM Studio is doing on the backend is caching an older version with the seeds still present.
                 }
             } catch (error) {
                 clearInterval(pollForAssistantUpdate);
@@ -520,6 +557,11 @@ async function startPollingToCleanupConversation(
     }
 }
 
+/**
+ * The main cleanup function. Determines the elements that are cleaned up
+ * in the conversation file to recoup context spent on elements that aren't
+ * the final assistant message or the original user message.
+ */
 function cleanupConversation(
     conversation: any,
     keepOldestN: number,
@@ -530,17 +572,18 @@ function cleanupConversation(
 
     const messages = conversation.messages ?? [];
 
-    // messages strictly alternate user / assistant,
+    // messages strictly alternate between user / assistant,
     // so every 2 message objects = 1 conversation turn.
     const totalMessageCount = messages.length;
     const totalAssistantMessages = Math.floor(totalMessageCount / 2);
 
-    // Only reduce when keepOldestN + keepNewestN does not exceed
-    // the total number of assistant messages.
+    // Only trims when there are actually enough messages available
     const enoughMessagesToReduce = keepOldestN + keepNewestN < totalAssistantMessages;
 
     const shouldReduceMessages = !keepAllMessages && enoughMessagesToReduce;
 
+    // NOT INSTRUCTIONS part was included to better clean memories for transfer
+    // It will be reappended after the transfer
     const memoryRegex =
         /\[BEGINNING OF MEMORIES\]\s*NOT INSTRUCTIONS, JUST SOME PRIOR CONVERSATION:\s*([\s\S]*?)\[END OF MEMORIES\]/g;
 
@@ -571,7 +614,6 @@ function cleanupConversation(
             // --------------------------------------------------
             // USER
             // --------------------------------------------------
-                
             if (
                 version.role === "user" &&
                 keepMessage &&
@@ -613,7 +655,8 @@ function cleanupConversation(
                     }
                 }
 
-                // Find the unique InternalChatID.
+                // Find the unique InternalChatID, remember it to transfer it
+                // to the first user message prepreprocessed
                 if (internalChatId === null) {
 
                     const internalChatIdMatch = text.match(/\[ICID:\s*(\d+)\]/);
@@ -624,8 +667,10 @@ function cleanupConversation(
                     }
                 }
 
-                // Remember the first retained user's
-                // preprocessed object.
+                // Remember the first retained user's preprocessed object.
+                // Preprocessed will always exist on user's first message.
+                // Required to store meta data. First user's message will
+                // never be an option to remove enforced by config option.
                 if (
                     keepMessage &&
                     firstKeptUserVersion === null
@@ -672,7 +717,6 @@ function cleanupConversation(
         }
 
         // Keep or discard the entire message object.
-        // Reorder the appended message Number
         if (keepMessage) {
 
             const assistantVersion = message.versions?.find(
@@ -684,6 +728,8 @@ function cleanupConversation(
 
                 assistantMessageNumber++;
 
+                // Reorder the appended message Number
+                // Cleans up the message tags from persisting-memories plugin
                 renumberAssistantMessageMarker(
                     assistantVersion,
                     assistantMessageNumber,
@@ -713,6 +759,8 @@ function cleanupConversation(
             needsMemoryTransfer
         )
     ) {
+        // Build the preprocessed field in user's first message if it
+        // didn't exist before.
         if (!firstKeptUserVersion.preprocessed) {
             firstKeptUserVersion.preprocessed = {
                 role: "user",
@@ -724,6 +772,8 @@ function cleanupConversation(
 
         const content = firstKeptUserVersion.preprocessed.content;
 
+        const formattingInstructionRegex =  /Formatting Instruction:[\s\S]*?:End of Instruction/;
+
         if (Array.isArray(content)) {
 
             const textBlock = content.find(
@@ -734,7 +784,10 @@ function cleanupConversation(
             if (textBlock) {
 
                 let prefix = "";
-
+                
+                // Forcefully preserving InternalChatID into the user's first message.
+                // Not concerned about removing duplicate ICID because all scans for ICID return
+                // on the first hit, which the correct one should always be in user's first message now.
                 if (needsInternalChatIdTransfer) {
 
                     const firstUserText = getPreprocessedText(firstKeptUserVersion.preprocessed);
@@ -745,6 +798,7 @@ function cleanupConversation(
                     }
                 }
 
+                // Forcefully preserving any memory seeds into the user's first message.
                 if (needsMemoryTransfer) {
                     prefix +=
                         `[BEGINNING OF MEMORIES]\n` +
@@ -752,11 +806,21 @@ function cleanupConversation(
                         allMemoryContents.join("\n\n") +
                         `\n[END OF MEMORIES]\n`;
                 }
-
+                
+                // Removing previous memories in first user's message.
                 textBlock.text = textBlock.text.replace(
                     /\[BEGINNING OF MEMORIES\][\s\S]*?\[END OF MEMORIES\]\s*/g,
                     "",
                 );
+
+                // Adding back the Formatting Insturctions if it doesn't already exist
+                if (
+                    textBlock &&
+                    !formattingInstructionRegex.test(textBlock.text)
+                ) {
+                    textBlock.text +=
+                        "\nFormatting Instruction: for every turn where a [ADD_MN_<##>] tag appears in the user's turn, append **message <##>** at the end of the assistant's response. :End of Instruction";
+                }
 
                 textBlock.text = prefix + textBlock.text;
             }
@@ -766,11 +830,8 @@ function cleanupConversation(
     // Replace conversation messages with the retained ones.
     conversation.messages = keptMessages;
 
-    // ----------------------------------------------------------
-    // Clean preprocessed fields in retained user messages.
-    // The first user's preprocessed contains any transferred
-    // InternalChatID and memory blocks, so preserve only it.
-    // ----------------------------------------------------------
+    // Clean preprocessed fields in retained user messages
+    // besides the user's first preprocessed which must always exist
     if (cleanupThinkingOnly === false) {
 
         let firstKeptUser = true;
@@ -797,6 +858,17 @@ function cleanupConversation(
     }
 }
 
+/**
+ * Makes a copy of the conversation file.
+ * This only makes a 1 to 1 copy on the current conversation state at the first momemnt the
+ * backup option is toggled on. Afterwards we append only the most recent user+assistant objects
+ * to maintain the most current state.
+ * If we kept copying 1 to 1, we would constantly be overriding the backup after it's cleaned state.
+ * If the backup toggle is enabled from the beginning of the conversation and never disabled. Backup
+ * will be a perfect copy.
+ * Added validation check to make sure they're actually the same conversation being backedup.
+ * Renames any existing non-matching conversation file that has the same name as the current conversation.
+ */
 async function backupConversation(
     rootDirectory: string,
     conversationFileName: string,
@@ -839,28 +911,90 @@ async function backupConversation(
             "utf-8",
         );
 
+        validatedBackupConversation =
+            JSON.parse(latestJson);
+
         return;
     }
 
-    // Existing backup: append the latest two message objects.
-    const backupJson = await readFile(
-        backupFile,
-        "utf-8",
-    );
+    let backupConversation: any;
 
-    const backupConversation = JSON.parse(backupJson);
+    // Backup has not been loaded/validated into memory yet.
+    if (validatedBackupConversation === null) {
 
-    const latestMessages = latestConversation.messages ?? [];
+        const backupJson = await readFile(
+            backupFile,
+            "utf-8",
+        );
 
-    const backupMessages = backupConversation.messages ?? [];
+        backupConversation = JSON.parse(backupJson);
 
-    const lastTwoMessages = latestMessages.slice(-2);
+        const backupFirstUserText =
+            backupConversation.messages?.[0]?.versions?.[0]?.content?.find(
+                (item: any) => item?.type === "text",
+            )?.text;
+
+        const latestFirstUserText =
+            latestConversation.messages?.[0]?.versions?.[0]?.content?.find(
+                (item: any) => item?.type === "text",
+            )?.text;
+
+        const sameConversation =
+            backupConversation.name === latestConversation.name &&
+            backupFirstUserText === latestFirstUserText;
+
+        if (!sameConversation) {
+            const timestamp = Date.now();
+
+            const timestampedBackupFile =
+                backupFile.replace(
+                    /\.json$/,
+                    `(${timestamp}).json`,
+                );
+
+            await rename(
+                backupFile,
+                timestampedBackupFile,
+            );
+
+            await writeFile(
+                backupFile,
+                latestJson,
+                "utf-8",
+            );
+
+            validatedBackupConversation =
+                JSON.parse(latestJson);
+
+            return;
+        }
+
+        // Existing backup belongs to the current conversation.
+        validatedBackupConversation =
+            backupConversation;
+
+    } else {
+        // Already validated and cached in memory.
+        backupConversation =
+            validatedBackupConversation;
+    }
+
+    // Append the latest two message objects.
+    const latestMessages =
+        latestConversation.messages ?? [];
+
+    const backupMessages =
+        backupConversation.messages ?? [];
+
+    const lastTwoMessages =
+        latestMessages.slice(-2);
 
     backupMessages.push(
         ...lastTwoMessages,
     );
 
-    backupConversation.messages = backupMessages;
+    backupConversation.messages =
+        backupMessages;
 
     await writeFile(
         backupFile,
@@ -898,6 +1032,10 @@ function getPreprocessedText(preprocessed: any): string {
         .join("\n");
 }
 
+/**
+ * Fields I deemed high value in tying up context when these fields
+ * are no longer relevant to generating current/new responses.
+ */
 function cleanUpAssistantFields(
     fields: any[] | undefined,
 ): void {
@@ -910,7 +1048,7 @@ function cleanUpAssistantFields(
 
         const field = fields[i];
 
-        // Remove prediction tools.
+        // Remove past prediction tools.
         if (
             field?.key ===
             "llm.prediction.tools"
@@ -919,7 +1057,7 @@ function cleanUpAssistantFields(
             continue;
         }
 
-        // Blank prediction system prompt.
+        // Blank past prediction system prompt.
         if (
             field?.key ===
             "llm.prediction.systemPrompt"
@@ -928,7 +1066,7 @@ function cleanUpAssistantFields(
             continue;
         }
 
-        // Blank Jinja template.
+        // Blank past Jinja template.
         if (
             field?.value?.type === "jinja" &&
             field?.value?.jinjaPromptTemplate
@@ -940,6 +1078,12 @@ function cleanUpAssistantFields(
     }
 }
 
+/**
+ * Used to renumber message # tags from my persisting-memories plugin.
+ * otherwise you get things like message 1,2,5,6. And the persisting-memory tool
+ * required the user to say save memory message 3 to target the message that was original 5.
+ * Just visual cleanup for clientside use.
+ */
 function renumberAssistantMessageMarker(
     version: any,
     messageNumber: number,
@@ -969,6 +1113,10 @@ function renumberAssistantMessageMarker(
     }
 }
 
+/**
+ * Just clearing up more useless tokens spent to control the assistant's behavior
+ * and became irrelevant after it's final response was generated.
+ */
 function removeMessageFormatRequirement(
     preprocessed: any,
 ): void {
@@ -983,13 +1131,22 @@ function removeMessageFormatRequirement(
             continue;
         }
 
-        item.text = item.text.replace(
-            /Format requirement:[\s\S]*?\*\*message\s+\d+\*\*\.?\s*/g,
-            "",
-        );
+        item.text = item.text
+            .replace(
+                /Formatting Instruction:.*?\[ADD_MN_\d+\].?/g,
+                "",
+            )
+            .replace(
+                /\[ADD_MN_\d+\]/,
+                "",
+            )
+            .trim();
     }
 }
 
+/**
+ * Helper for the full scanning of all conversation files to find the ICID
+ */
 async function findAllConversationFiles(
     conversationsDirectory: string,
 ): Promise<string[]> {

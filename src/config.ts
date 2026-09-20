@@ -44,6 +44,15 @@ export const configSchematics = createConfigSchematics()
     1
   )
   .field(
+    "keepAllMessages",
+    "boolean",
+    {
+      displayName: "OVERRIDE: Cleanup But Keep All Messages",
+      warning: "All messages will be kept after cleanup. This ignores the truncation system.",
+    },
+    false
+  )
+  .field(
     "cleanupThinkingOnly",
     "boolean",
     {
@@ -54,20 +63,12 @@ export const configSchematics = createConfigSchematics()
     false
   )
   .field(
-    "keepAllMessages",
-    "boolean",
-    {
-      displayName: "OVERRIDE: Cleanup But Keep All Messages",
-      warning: "All messages will be kept after cleanup. This ignores the truncation system.",
-    },
-    false
-  )
-  .field(
     "createBackup",
     "boolean",
     {
-      displayName: "EXTRA: Create Backup Before Cleanup",
+      displayName: "EXTRA: Maintain an Uncleaned Backup",
       warning: "Backup saved in .lmstudio\\conversation-backup folder.",
+      hint: "A the moment of enabling creates an exact copy. Subsequent backups only maintain the copy by append in your latest user/assistant turn. "
     },
     false
   )
