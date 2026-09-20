@@ -1,7 +1,7 @@
 # Context Cleanup Plugin for LM Studio
 
-https://github.com/anh-vudinh/LM-Studio_Context-Cleanup
-Tested on Windows 11 Pro 25H2 - LM Studio 0.4.24
+- [GitHub Link](https://github.com/anh-vudinh/LM-Studio_Context-Cleanup)
+- Tested on Windows 11 Pro 25H2 - LM Studio 0.4.24
 
 ## Introduction
 
@@ -60,7 +60,7 @@ The table below outlines every available configuration in the control panel and 
 | **Cleanup Context?** | Boolean · `ON / OFF` | Master switch that turns all cleanup behavior on or off. The plugin only functions while this is enabled. |
 | **Keep first `<N>` messages** | Numeric, min 1 | Number of oldest user/assistant turns to preserve from the beginning of the conversation. Message 1 will never be an option to remove. |
 | **Keep last `<N>` messages** | Numeric, min 1 | Number of newest user/assistant turns to keep. |
-| **Cleanup after every `<N>`th message** | Numeric, min 1 | Trigger rate of cleanup after the <N>th message from the last cleanup. Cleaning only begins once at least three existing messages are present (the current turn counts toward this). Still respected by the override modes below. |
+| **Cleanup after every `<N>`th message** | Numeric, min 1 | Trigger rate of cleanup after the `<N>`th message from the last cleanup. Cleaning only begins once at least three existing messages are present (the current turn counts toward this). Still respected by the override modes below. |
 | **OVERRIDE: Cleanup But Keep All Messages** | Boolean · `ON / OFF` | When enabled, internal cleaning still allowed to run but no turns are truncated — everything is retained in context. Overrides the keep-oldest / keep-newest counts system. |
 | **OVERRIDE: Cleanup Thinking Context Only** | Boolean · `ON / OFF` | Restricts cleanup to thinking tokens only; all other default cleanups past (system prompt, Jinja templates, tools, preprocessed content) are ignored. |
 | **EXTRA: Maintain an Uncleaned Backup** | Boolean · `ON / OFF` | Keeps a backup copy of the conversation in `.lmstudio\conversations-backup`. The first time it is enabled, an exact 1-to-1 copy is saved; afterward only the latest user + assistant turns are appended to upkeep the current state. |
@@ -74,7 +74,7 @@ The plugin relies on LM Studio's local storage layout and manages a few files/fo
 | `~/.lmstudio/conversations/` | The default main directory that LM Studio stores current chat sessions. This is where the plugin reads, cleans up, and maintains conversation files. |
 | `ChatSessionConversationRelationship.json` *(inside `conversations/`)* | Automatically created and used by this plugin. Tracks the mapping between an Internal Chat ID (`ICID`) and its matching conversation file so the plugin can reliably and cheaply locate the correct session across restarts or random uncontrollable plugin reinitializations. Hard cap of only 15 of the latest entries to keep file size small. |
 | `<conversationFile>.lock` *(temporarily inside `conversations/`)* | A temporary lock file created while cleanup is in progress and removed when finished. It lets this plugin safely run alongside others, like my (e.g., *Persisting Memories*) plugin, that may want to modify the conversation at the same time. |
-| `~/.lmstudio/conversations-backup/` *(only if createBackup is enabled)* | Holds uncleaned backup copies of your conversation. The first enable creates an exact copy; subsequent runs append only the latest user + assistant turns to preserve current state without constantly overwriting with a cleaned file. Backups that hold onto a reused conversation name will be renamed with a UNIX timestamp of the current time they were renamed. The most recent conversation has priority over the base duplicate name. |
+| `~/.lmstudio/conversations-backup/` *(only if createBackup is enabled)* | Holds uncleaned backup copies of your conversation. The first time it's enable it creates an exact copy; subsequent runs append only the latest user/assistant turns to update the current state without constantly overwriting with a cleaned conversation and losing older chats. Old backups file's whose names are reused for a new conversation will be renamed with the current time's UNIX timestamp as a suffix. The most recent conversation has priority over the duplicated base name. |
 
 ## Limitations or Notes
 
