@@ -1,5 +1,7 @@
 import { createConfigSchematics } from "@lmstudio/sdk";
 
+const lockFileOwnership = new Map<string, boolean | null>();
+
 export const configSchematics = createConfigSchematics()
   .field(
     "contextCleanup",
@@ -58,7 +60,17 @@ export const configSchematics = createConfigSchematics()
     {
       displayName: "OVERRIDE: Cleanup Thinking Context Only",
       warning: "Only cleans the thinking tokens. All extra cleanups provided by default are ignored.",
-      hint: "Default Cleanups for past messages: Thinking | System prompt | Jinja | Tools | Preprocessed.",
+      hint: "Cleanups for past messages: | Thinking |",
+    },
+    false
+  )
+  .field(
+    "keepAllThinking",
+    "boolean",
+    {
+      displayName: "OVERRIDE: Keep all thinking tokens",
+      warning: "Cleanup but keeps all the thinking tokens.",
+      hint: "Cleanups for past messages: | System prompt | Jinja | Tools | Preprocessed |",
     },
     false
   )
@@ -73,3 +85,16 @@ export const configSchematics = createConfigSchematics()
     false
   )
   .build();
+
+export function setLockFileOriginatesFromThisPlugin(
+    lockFile: string,
+    value: boolean | null,
+): void {
+    lockFileOwnership.set(lockFile, value);
+}
+
+export function getLockFileOriginatesFromThisPlugin(
+    lockFile: string,
+): boolean | null {
+    return lockFileOwnership.get(lockFile) ?? null;
+}

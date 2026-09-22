@@ -1,7 +1,12 @@
-import { configSchematics } from "./config";
 import { join, basename } from "node:path";
 import path from "node:path";
 import os from "os";
+
+import {
+    configSchematics,
+    setLockFileOriginatesFromThisPlugin,
+    getLockFileOriginatesFromThisPlugin,
+ } from "./config";
 
 import { 
     readFile, 
@@ -24,7 +29,7 @@ let conversationFileName = "";
 let internalChatID = "";
 const relationshipsLimit = 15;
 let validatedBackupConversation: any = null;
-const LOCK_TIMEOUT_MS = 10_000;
+const LOCK_TIMEOUT_MS = 7_000;
 const POLL_INTERVAL_MS = 100;
 
 /**
@@ -57,6 +62,7 @@ export async function promptPreprocessor(
     const cleanupThinkingOnly = config.get("cleanupThinkingOnly") as boolean;
     const keepAllMessages = config.get("keepAllMessages") as boolean;
     const createBackup = config.get("createBackup") as boolean;
+    const keepAllThinking = config.get("keepAllThinking") as boolean;
     let createNewInternalChatID = false;
 
     if (contextCleanup === true) {
@@ -122,19 +128,47 @@ export async function promptPreprocessor(
                 conversationFileName = normalizeJsonFileName(conversationFileName);
             }
         
+
+            // Ugly but only way I could think of to get this check in place to make this plugin lose the lockfile race.
+            const saveMemoryMatch = userText.match(
+                /\b(?:save|sav|sve|sv|store|remember|persist)\b.*?\b(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\b\s*(\d+)/i,
+            );
+
             // Final cleanup
             // Fires off only with a known conversation file, requirement to access the correct file
             if (conversationFileName !== "") {
 
-                await startPollingToCleanupConversation(
-                    lmStudioRootDirectory, 
-                    keepOldestN, 
-                    keepNewestN, 
-                    cleanupThinkingOnly, 
-                    keepAllMessages,
-                    createBackup,
-                    messages
-                );
+                if (saveMemoryMatch) {
+                    // Without the timeout there's a very rare special situation where
+                    // This plugin would clean the user/assistant turn that was needed for the memory save.
+                    setTimeout(() => {
+                        void startPollingToCleanupConversation(
+                            lmStudioRootDirectory, 
+                            keepOldestN, 
+                            keepNewestN, 
+                            cleanupThinkingOnly, 
+                            keepAllMessages,
+                            createBackup,
+                            messages,
+                            keepAllThinking,
+                            userText,
+                        );
+                    }, 1500);
+                    console.log("======ran CC save memory cleanup branch")
+                } else {
+                    void startPollingToCleanupConversation(
+                        lmStudioRootDirectory, 
+                        keepOldestN, 
+                        keepNewestN, 
+                        cleanupThinkingOnly, 
+                        keepAllMessages,
+                        createBackup,
+                        messages,
+                        keepAllThinking,
+                        userText,
+                    );
+                    console.log("======ran CC default cleanup branch")
+                }
             }
         }
     }
@@ -417,6 +451,8 @@ async function promptProcessorScanForConversationFile(
                     await unlink(lockFile);
                 } catch {
                     // ignore
+                } finally {
+                    setLockFileOriginatesFromThisPlugin(lockFile, null);
                 }
             }
         }
@@ -476,7 +512,8 @@ function cleanupConversation(
     keepNewestN: number,
     cleanupThinkingOnly: boolean,
     keepAllMessages: boolean,
-    historyMessages: ChatMessage[]
+    historyMessages: ChatMessage[],
+    keepAllThinking: boolean,
 ): void {
 
     const messages = conversation.messages ?? [];
@@ -487,8 +524,9 @@ function cleanupConversation(
     //const totalAssistantMessages = Math.floor(totalMessageCount / 2);
     const totalAssistantMessages = historyMessages.filter(
             message => message.getRole() === "assistant"
-        ).length + 1;
+        ).length;
 
+    console.log(totalAssistantMessages);
     // Only trims when there are actually enough messages available
     const enoughMessagesToReduce = keepOldestN + keepNewestN < totalAssistantMessages;
 
@@ -601,11 +639,14 @@ function cleanupConversation(
                 Array.isArray(version.steps)
             ) {
 
-                // Remove thinking steps.
-                version.steps = version.steps.filter(
-                    (step: any) =>
-                        step?.style?.type !== "thinking",
-                );
+                if(keepAllThinking === false) {
+                    // Remove thinking steps.
+                    version.steps = version.steps.filter(
+                        (step: any) =>
+                            step?.style?.type !== "thinking",
+                    );
+                }
+
                 
                 if (cleanupThinkingOnly === false) {
 
@@ -781,7 +822,9 @@ async function startPollingToCleanupConversation(
     cleanupThinkingOnly: boolean,
     keepAllMessages: boolean,
     createBackup: boolean,
-    messages: ChatMessage[]
+    messages: ChatMessage[],
+    keepAllThinking: boolean,
+    userText: string,
 ): Promise<void> {
 
     try {
@@ -810,21 +853,18 @@ async function startPollingToCleanupConversation(
         // This will help regulate the timings of multiple polling plugins
         const lockFile = `${conversationFile}.lock`;
 
-        // Safety precaution - remove any abandoned lock file before starting
-        try {
-
-            await unlink(lockFile);
-
-        } catch (error: any) {
-
-            if (error?.code !== "ENOENT") {
-                console.error(`Context cleanup error while removing abandoned lockfile: ${error}`);
-            }
-        }
-
-        // Create the lock file before polling. This lockfile exist to allow this plugin
-        // to work alongside https://github.com/anh-vudinh/LM-Studio_Plugin-Persisting-Memories
+        // Create the lock file before polling.
+        // acquireLock() records whether the lock was already present
+        // or was created by this plugin.
         await acquireLock(lockFile);
+
+        const lockOriginatesFromThisPlugin =
+            getLockFileOriginatesFromThisPlugin(lockFile);
+
+        const pollInterval =
+            lockOriginatesFromThisPlugin === false
+                ? 200
+                : 500;
 
         // Initiated polling until assistantLastMessagedAt value changes
         // then initiate the conversation json overwrite
@@ -839,11 +879,19 @@ async function startPollingToCleanupConversation(
 
                 const latestConversation = JSON.parse(latestJson);
 
-                if (latestConversation.assistantLastMessagedAt !== originalAssistantLastMessagedAt) {
+                if (
+                    latestConversation.assistantLastMessagedAt !==
+                    originalAssistantLastMessagedAt
+                ) {
                     clearInterval(pollForAssistantUpdate);
+
+                    const delay =
+                        lockOriginatesFromThisPlugin === false
+                            ? 100
+                            : 2000;
                 
-                    // Wait 2 seconds for LM Studio to finish
-                    // whatever backend work/cache operation it is doing.
+                    // Wait for LM Studio to finish whatever backend
+                    // work/cache operation it is doing.
                     setTimeout(async () => {
 
                         try {
@@ -870,7 +918,8 @@ async function startPollingToCleanupConversation(
                                 keepNewestN, 
                                 cleanupThinkingOnly, 
                                 keepAllMessages,
-                                messages
+                                messages,
+                                keepAllThinking,
                             );
 
                             await writeFile(
@@ -878,35 +927,54 @@ async function startPollingToCleanupConversation(
                                 JSON.stringify(latestConversation, null, 2),
                                 "utf-8",
                             );
+
                         } catch (error) {
 
                             console.error(
                                 "Error during delayed memory seed cleanup:",
                                 error,
                             );
+
                         } finally {
                             
-                            // Removing the lock file as final step so other plugins can now modify a cleaned conversation file
+                            // Removing the lock file as final step so other
+                            // plugins can now modify the cleaned conversation file.
                             try {
                                 await unlink(lockFile);
+                                console.log("=====lock CC removed=====")
                             } catch {
                                 // ignore
+                            } finally {
+                                setLockFileOriginatesFromThisPlugin(lockFile, null);
                             }
                         }
 
-                    }, 2000);   
-                    // CANNOT BE LESS THAN 2000ms, if you go lower than this something LM Studio is doing on the backend is caching an older version with the seeds still present.
+                    }, delay);
                 }
+
             } catch (error) {
                 clearInterval(pollForAssistantUpdate);
 
-                console.error(`Error polling for assistant update: ${error}`);
+                console.error(
+                    `Error polling for assistant update: ${
+                        error instanceof Error
+                            ? error.message
+                            : String(error)
+                    }`
+                );
             }
 
-        }, 800);
+        }, pollInterval);
+
     } catch (error) {
         
-        console.error(`startPollingToCleanupConversation error: ${error instanceof Error ? error.message : String(error)}`);
+        console.error(
+            `startPollingToCleanupConversation error: ${
+                error instanceof Error
+                    ? error.message
+                    : String(error)
+            }`
+        );
     }
 }
 
@@ -1506,45 +1574,6 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
     return foundConversationFileName;
 }
 
-async function acquireLock(lockFile: string): Promise<void> {
-    while (true) {
-        try {
-            const handle = await open(lockFile, "wx");
-            await handle.close();
-
-            return;
-        } catch (error) {
-            const fsError = error as NodeJS.ErrnoException;
-
-            if (fsError.code !== "EEXIST") {
-                throw error;
-            }
-
-            try {
-                const stats = await stat(lockFile);
-                const lockAge = Date.now() - stats.mtimeMs;
-
-                if (lockAge >= LOCK_TIMEOUT_MS) {
-                    await unlink(lockFile);
-                    continue;
-                }
-            } catch (error) {
-                const fsError = error as NodeJS.ErrnoException;
-
-                if (fsError.code !== "ENOENT") {
-                    throw error;
-                }
-
-                continue;
-            }
-
-            await new Promise<void>((resolve) =>
-                setTimeout(resolve, POLL_INTERVAL_MS),
-            );
-        }
-    }
-}
-
 async function updateRelationshipFile(
     relationships: any[],
     rootDirectory: string,
@@ -1624,8 +1653,75 @@ async function updateRelationshipFile(
     } finally {
         try {
             await unlink(lockFile);
+            
         } catch {
             // ignore
+        } finally {
+            setLockFileOriginatesFromThisPlugin(lockFile, null);
+        }
+    }
+}
+
+/**
+ * Three States for lock
+ * Null = no one claims ownership, abandoned file
+ * True = lock was successfully acquired by this plugin
+ * False = there was another lock exisiting before this plugin could acquire it
+ */
+export async function acquireLock(
+    lockFile: string
+): Promise<void> {
+
+    const startedAt = Date.now();
+
+    while (true) {
+        try {
+
+            if (Date.now() - startedAt >= 15_000) {
+                throw new Error(
+                    `Timed out waiting for lock: ${lockFile}`,
+                );
+            }
+
+            const handle = await open(lockFile, "wx");
+
+            setLockFileOriginatesFromThisPlugin(lockFile, true);
+            console.log("=====lock created by CC=====");
+
+            await handle.close();
+
+            return;
+        } catch (error) {
+            const fsError = error as NodeJS.ErrnoException;
+
+            if (fsError.code !== "EEXIST") {
+                throw error;
+            }
+
+            setLockFileOriginatesFromThisPlugin(lockFile, false);
+            console.log("=====lock not FROM CC=====");
+
+            try {
+                const stats = await stat(lockFile);
+                const lockAge = Date.now() - stats.mtimeMs;
+
+                if (lockAge >= LOCK_TIMEOUT_MS) {
+                    await unlink(lockFile);
+                    continue;
+                }
+            } catch (error) {
+                const fsError = error as NodeJS.ErrnoException;
+
+                if (fsError.code !== "ENOENT") {
+                    throw error;
+                }
+
+                continue;
+            }
+
+            await new Promise<void>((resolve) =>
+                setTimeout(resolve, POLL_INTERVAL_MS),
+            );
         }
     }
 }
