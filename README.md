@@ -1,6 +1,6 @@
 # Context Cleanup Plugin for LM Studio
 
-- **This Plugin** - [GithHub - Context Cleanup](https://github.com/anh-vudinh/LM-Studio_Context-Cleanup) | 
+- **This Plugin** - [GithHub - Context Cleanup](https://github.com/anh-vudinh/LM-Studio_Context-Cleanup) | [LMStudio](https://lmstudio.ai/anhuvdinh/context-cleanup)
 
 - **Optional Compatible Plugins** (I recommend the Explicit over the Model Dependent version)
 [GithHub - Persisting Memories Explicit](https://github.com/anh-vudinh/-anh-vudinh-LM-Studio_Plugin-Persisting-Memories-Explicit) | [LMStudio - Persisting Memories Explicit](https://lmstudio.ai/anhuvdinh/persisting-memories-explicit)
