@@ -6,6 +6,7 @@
 [GithHub - Persisting Memories Explicit](https://github.com/anh-vudinh/-anh-vudinh-LM-Studio_Plugin-Persisting-Memories-Explicit) | [LMStudio - Persisting Memories Explicit](https://lmstudio.ai/anhuvdinh/persisting-memories-explicit)
 
 ***Model dependent version has not yet been made compatible with the latest version of this plugin. I will update this Readme when it has***
+
 [GithHub - Persisting Memories (Model Dependent)](https://github.com/anh-vudinh/LM-Studio_Plugin-Persisting-Memories) | [LMStudio - Persisting Memories (Model Dependent)](https://lmstudio.ai/anhuvdinh/persisting-memories)
 
 - Tested on Windows 11 Pro 25H2 - LM Studio 0.4.24
