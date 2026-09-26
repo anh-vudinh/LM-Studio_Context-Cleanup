@@ -70,12 +70,10 @@ export async function promptPreprocessor(
         ).length + 1;
 
         // Trigger every whole number
-        if (userMessageCount > 0 && 
+        if ((userMessageCount > 0 && 
             userMessageCount % cleanupCounter === 0 &&
-            userMessageCount >= minimumToStartCleaning &&
-            (userMessageCount >= keepNewestN+keepOldestN || 
-                keepAllMessages === true
-            )
+            userMessageCount >= minimumToStartCleaning) ||
+            keepAllMessages === true
         ) {
             // Repopulate InternalChatID if user purposely and manually deleted
             // user's message 1
