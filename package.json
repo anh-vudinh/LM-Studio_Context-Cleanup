@@ -1,7 +1,7 @@
 {
   "name": "lms-plugin-context-cleanup",
   "version": "1.0.0",
-  "description": "LM Studio plugin to create memory seeds to carry forward into a new conversation.",
+  "description": "LM Studio plugin to clean up context wasted on irrelevant meta data and past thinking messages. Allows real-time truncation. This is a post assistant response process.",
   "main": "index.js",
   "scripts": {
     "dev": "lms dev",

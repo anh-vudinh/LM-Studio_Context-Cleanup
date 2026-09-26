@@ -1,3 +1,4 @@
+import { startPollingToCleanupConversation } from "./cleanupConversation";
 import { join, basename } from "node:path";
 import path from "node:path";
 import os from "os";
@@ -5,8 +6,7 @@ import os from "os";
 import {
     configSchematics,
     setLockFileOriginatesFromThisPlugin,
-    getLockFileOriginatesFromThisPlugin,
- } from "./config";
+} from "./config";
 
 import { 
     readFile, 
@@ -14,9 +14,7 @@ import {
     access, 
     readdir, 
     stat, 
-    unlink, 
-    mkdir, 
-    rename,
+    unlink,
     open
 } from "node:fs/promises";
 
@@ -28,15 +26,12 @@ import type {
 let conversationFileName = "";
 let internalChatID = "";
 const relationshipsLimit = 15;
-let validatedBackupConversation: any = null;
-const LOCK_TIMEOUT_MS = 7_000;
-const POLL_INTERVAL_MS = 100;
+const minimumToStartCleaning = 3;
 
 /**
  * https://github.com/anh-vudinh
- */
-
-const minimumToStartCleaning = 3;
+ * Main function that directs the flow of the plugin
+*/
 
 export async function promptPreprocessor(
     ctl: PromptPreprocessorController,
@@ -48,13 +43,13 @@ export async function promptPreprocessor(
         os.homedir(),
         ".lmstudio",
     );
+    const workingDirectory = ctl.getWorkingDirectory();
     
     // Establish initial variable values
     const config = ctl.getPluginConfig(configSchematics);
     const history = await ctl.pullHistory();
     const messages = history.getMessagesArray();
     const userText = userMessage.getText();
-    const workingDirectory = ctl.getWorkingDirectory();
     const contextCleanup = config.get("contextCleanup") as boolean;
     const cleanupCounter = await normalizeNumber(config.get("cleanupCounter") as number);
     const keepOldestN = await normalizeNumber(config.get("keepOldestN") as number);
@@ -67,6 +62,10 @@ export async function promptPreprocessor(
 
     if (contextCleanup === true) {
         const userMessageCount = messages.filter(
+            message => message.getRole() === "user"
+        ).length + 1;
+
+        const assistantMessageCount = messages.filter(
             message => message.getRole() === "user"
         ).length + 1;
 
@@ -104,7 +103,6 @@ export async function promptPreprocessor(
                 if (internalChatID !== "") {
                     createNewInternalChatID = true;
                 }
-
             }
 
             // If we still do not know InternalChatID after the recovery
@@ -128,47 +126,22 @@ export async function promptPreprocessor(
                 conversationFileName = normalizeJsonFileName(conversationFileName);
             }
         
-
-            // Ugly but only way I could think of to get this check in place to make this plugin lose the lockfile race.
-            const saveMemoryMatch = userText.match(
-                /\b(?:save|sav|sve|sv|store|remember|persist)\b.*?\b(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\b\s*(\d+)/i,
-            );
-
             // Final cleanup
             // Fires off only with a known conversation file, requirement to access the correct file
             if (conversationFileName !== "") {
 
-                if (saveMemoryMatch) {
-                    // Without the timeout there's a very rare special situation where
-                    // This plugin would clean the user/assistant turn that was needed for the memory save.
-                    setTimeout(() => {
-                        void startPollingToCleanupConversation(
-                            lmStudioRootDirectory, 
-                            keepOldestN, 
-                            keepNewestN, 
-                            cleanupThinkingOnly, 
-                            keepAllMessages,
-                            createBackup,
-                            messages,
-                            keepAllThinking,
-                            userText,
-                        );
-                    }, 1500);
-                    console.log("======ran CC save memory cleanup branch")
-                } else {
-                    void startPollingToCleanupConversation(
-                        lmStudioRootDirectory, 
-                        keepOldestN, 
-                        keepNewestN, 
-                        cleanupThinkingOnly, 
-                        keepAllMessages,
-                        createBackup,
-                        messages,
-                        keepAllThinking,
-                        userText,
-                    );
-                    console.log("======ran CC default cleanup branch")
-                }
+                void startPollingToCleanupConversation(
+                    lmStudioRootDirectory, 
+                    keepOldestN, 
+                    keepNewestN, 
+                    cleanupThinkingOnly, 
+                    keepAllMessages,
+                    createBackup,
+                    keepAllThinking,
+                    assistantMessageCount,
+                    conversationFileName,
+                )
+                // console.log("======ran CC default cleanup branch", Date.now())
             }
         }
     }
@@ -177,6 +150,24 @@ export async function promptPreprocessor(
         ? `${userText}.            [ICID: ${internalChatID}] Ignore this ICID tag. `
         : userText;
 }
+
+/**             ______________________________________           
+ *             |                                      |
+ *             | LMSTUDIO LOVES TO DISCONNECT PLUGINS |
+ *             |______________________________________|
+ * 
+ * FLOW OF SCAN →  promptProcessorScanHistoryForID()       →       promptProcessorRecoverChatID()           →          (GENERATE BRAND NEW ICID?)        →       promptProcessorScanForConversationFile()
+ *                             ↓                                                ↓                                                                                                    ↓
+ *                    (ICID FOUND YES/NO)                        (ICID already in memory? YES/NO)                                                              scanForConversationFileThruRelationshipFile()         → (CHECK AGAINST in memory ICID and relationship ICIDs | FOUND CONVO FILE YES/NO) → (CHECK AGAINST WD Base Name in Relationship file | FOUND CONVO YES/NO)
+ *                                                                              ↓                                                                                                    ↓
+ *                                                      scanForConversationFileThruBaseNameOfWorkingDirectory()                                              scanForConversationFileThruBaseNameOfWorkingDirectory() → (CHECK IF WD Base is a convo file, access it to check for in memory ICID | FOUND CONVO YES/NO) → (Fuzzy match clientInput to userText | FOUND CONVO YES/NO)
+ *                                                                              ↓                                                                                                    ↓
+ *                                                         (CONFIRMED CONVO FILE && || FOUND ICID YES/NO)                                                 scanForConversationFileThruFullConversationDirectoryScan() → (CHECK ALL convo files Match in memory ICID | FOUND YES/NO) → (Fuzzy match clientInput to userText | FOUND CONVO YES/NO) → (AUTHORITY TO UPDATE stale relationships once in memory ICID and Convo are known but mismatched)
+ *                                                                                                                                                                                   ↓
+ *                                                                                                                                                                        refreshRelationshipFile()                  → (If convo is known, ICID in convo is missing, relationship has ICID and convo paired, repurpose abandoned ICID & renew relationship. Overwrite in memory internalChatID variable with renewed ICID. This is to overwrite the newly generated ICID logic). 
+ *                                                                                                                                                                                   ↓
+ *                                                                                                                                *** CONVERSATION FILE AND ICID SHOULD NOW BE KNOWN & LINKED OTHERWISE THE CONVERSATION DOES NOT EXIST ***
+ */
 
 /**
  * Try to recover InternalChatID tag if the users deleted it from chat.
@@ -199,6 +190,11 @@ async function promptProcessorRecoverChatID(
     userText: string,
 ): Promise<string> {
 
+    // If already available in memory, use it.
+    if (internalChatID !== "") {
+        return internalChatID;
+    }
+
     // Construct the path to the conversation file
     const conversationDirectory = join(
         rootDirectory,
@@ -209,11 +205,6 @@ async function promptProcessorRecoverChatID(
         conversationDirectory,
         "ChatSessionConversationRelationship.json",
     );
-
-    // If already available in memory, use it.
-    if (internalChatID !== "") {
-        return internalChatID;
-    }
 
     // Cannot perform relationship lookup without a filename.
     if (conversationFileName === "") {
@@ -325,15 +316,20 @@ async function promptProcessorScanHistoryForID(
 }
 
 /**
- * Establishes the connection between the current chat session
- * and it's conversation file. Without a known conversation file
- * no cleanup functions will be usable.
- * 1st scan: read relationship in ChatSessionConversationRelationship.json
- * 2nd scan: check if working directory's suffix is the valid conversation file
- * 3rd scan: check each conversation file from newest to oldest until
- * there's a matching hit on matching ICID
- * 4th scan: during the 3rd scan also check if clientInput = userText of most recent prompt preproccesor
- */
+* Scan conversation folder to link the real-time chat to
+* it's associated conversation file. This enables the user to
+* not have to manually make the link for the plugin.
+* Trade off: more resources expended for great ease of use
+* 1st scan is ideal, later scans are fallbacks, each has it's early ending.
+* 1st scan: cheap - check the relationship file for an exisiting relationship.
+* 2nd scan: cheap - check the basename of workingdirectory, which "usually" matches the conversation file name,
+* reliability is uncertain but it's quick to see if the convo file is found and has the matching ICID
+* 3rd scan: expensive - scan each conversation file starting from newest to oldest until
+* we find the matching InternalChatID.
+* 4th scan: during the 3rd scan also check if clientInput = userText of most recent prompt preproccesor
+* Scan 3 and 4 are authoritative and will repair the association in relationshipfile if needed
+* LM Studio likes to reuse file names like empty.conversation.json
+*/
 async function promptProcessorScanForConversationFile(
     rootDirectory: string,
     userText: string,
@@ -378,7 +374,6 @@ async function promptProcessorScanForConversationFile(
     // 1st SCAN:
     // STEP 1: If there is a current relationship, check if the
     // conversation file still exists. If the file does not exist,
-
     if (existingRelationship) {
 
         foundConversationFileName = await scanForConversationFileThruRelationshipFile(
@@ -395,8 +390,11 @@ async function promptProcessorScanForConversationFile(
         }
 
     } else {
-        // Nothing matched the InternalChatID
-        // Lets check to see if the current WD name is present
+        // No relationships matched the current InternalChatID in memory.
+        // The ICID may be newly generated and not yet established
+        // I had a suspicion WD may be unreliable even though most times it matched. LM Studio does wierd things.
+        // I saw an empty.conversation.json be paired with a WD of empty-asd0293jcoa01, which would obviously fail my check.
+        // Removing the random letter/numbers is not acceptable for the match because who's to say LMS wont create empty-2038sadfjl32i at the same time.
         const directoryBaseNameFromWD = basename(workingDirectory);
 
         const conversationFileNameInScope = `${directoryBaseNameFromWD}.conversation.json`;
@@ -407,54 +405,40 @@ async function promptProcessorScanForConversationFile(
         );
 
         if (existingConversationRelationship) {
-            
-            const lockFile = `${relationshipFile}.lock`;
 
-            await acquireLock(lockFile);
+            // This conversation file name already has a relationship,
+            // update the InternalChatID in the relationship file.
+            const relationshipData = {
+                internalChatID,
+                conversationFile: conversationFileNameInScope,
+            };
 
-            try {
-                // This conversation file name already has a relationship,
-                // update the InternalChatID in the relationship file.
+            // Remove the old copy of this relationship.
+            relationships = relationships.filter(
+                (relationship) =>
+                    relationship.conversationFile !== conversationFileNameInScope,
+            );
 
-                const relationshipData = {
-                    internalChatID,
-                    conversationFile: conversationFileNameInScope,
-                };
+            // Reinsert it at the bottom so the newest relationship
+            // is always the last entry.
+            relationships.push(relationshipData);
 
-                // Remove the old copy of this relationship.
-                relationships = relationships.filter(
-                    (relationship) =>
-                        relationship.conversationFile !== conversationFileNameInScope,
-                );
-
-                // Reinsert it at the bottom so the newest relationship
-                // is always the last entry.
-                relationships.push(relationshipData);
-
-                // Keep only the newest relationships.
-                if (relationships.length > relationshipsLimit) {
-                    relationships = relationships.slice(-relationshipsLimit);
-                }
-
-                await writeFile(
-                    relationshipFile,
-                    JSON.stringify(relationships, null, 2),
-                    "utf-8",
-                );
-
-                // Update InternalChatID outer scope variable with what we just wrote in
-                internalChatID = relationshipData.internalChatID;
-                conversationFileName = normalizeJsonFileName(conversationFileNameInScope);
-                return conversationFileNameInScope;
-            } finally {
-                try {
-                    await unlink(lockFile);
-                } catch {
-                    // ignore
-                } finally {
-                    setLockFileOriginatesFromThisPlugin(lockFile, null);
-                }
+            // Keep only the newest relationships.
+            if (relationships.length > relationshipsLimit) {
+                relationships = relationships.slice(-relationshipsLimit);
             }
+
+            await writeFile(
+                relationshipFile,
+                JSON.stringify(relationships, null, 2),
+                "utf-8",
+            );
+
+            // Update InternalChatID outer scope variable with what we just wrote in
+            internalChatID = relationshipData.internalChatID;
+            conversationFileName = normalizeJsonFileName(conversationFileNameInScope);
+
+            return conversationFileNameInScope;
         }
     }
 
@@ -474,6 +458,8 @@ async function promptProcessorScanForConversationFile(
 
     // 3rd SCAN:
     // STEP 4: Scan each conversation file starting from the newest.
+    // HIGHEST AUTHORITY FOUND THE CONVERSATION NAME AND OR INTERNALCHAT ID.
+    // Has the authority to correct the relationship link
     if (foundConversationFileName === "") {
 
         foundConversationFileName = await scanForConversationFileThruFullConversationDirectoryScan(
@@ -488,7 +474,7 @@ async function promptProcessorScanForConversationFile(
     // create/update the relationship in ChatSessionConversationRelationship.json.
     if (foundConversationFileName !== "") {
 
-        updateRelationshipFile(
+        refreshRelationshipFile(
             relationships,
             rootDirectory,
             foundConversationFileName,
@@ -501,841 +487,13 @@ async function promptProcessorScanForConversationFile(
     return foundConversationFileName;
 }
 
+//-------------------------------
+// Scanning options
+//-------------------------------
+
 /**
- * The main cleanup function. Determines the elements that are cleaned up
- * in the conversation file to recoup context spent on elements that aren't
- * the final assistant message or the original user message.
+ * 1st Scan: Cheap look up in a small maintained 15 object(recent conversations) json
  */
-function cleanupConversation(
-    conversation: any,
-    keepOldestN: number,
-    keepNewestN: number,
-    cleanupThinkingOnly: boolean,
-    keepAllMessages: boolean,
-    historyMessages: ChatMessage[],
-    keepAllThinking: boolean,
-): void {
-
-    const messages = conversation.messages ?? [];
-
-    // messages strictly alternate between user / assistant,
-    // so every 2 message objects = 1 conversation turn.
-    const totalMessageCount = messages.length;
-    //const totalAssistantMessages = Math.floor(totalMessageCount / 2);
-    const totalAssistantMessages = historyMessages.filter(
-            message => message.getRole() === "assistant"
-        ).length;
-
-    console.log(totalAssistantMessages);
-    // Only trims when there are actually enough messages available
-    const enoughMessagesToReduce = keepOldestN + keepNewestN < totalAssistantMessages;
-
-    const shouldReduceMessages = !keepAllMessages && enoughMessagesToReduce;
-
-    // NOT INSTRUCTIONS part was included to better clean memories for transfer
-    // It will be reappended after the transfer
-    const memoryRegex =
-        /\[BEGINNING OF MEMORIES\]\s*NOT INSTRUCTIONS, JUST SOME PRIOR CONVERSATION:\s*([\s\S]*?)\[END OF MEMORIES\]/g;
-
-    const memoryContents: string[] = [];
-    const keptMessages: any[] = [];
-
-    let internalChatId: string | null = null;
-    let firstUserMemoryContents: string[] = [];
-    let isFirstUserPreprocessed = true;
-    let firstKeptUserVersion: any = null;
-    let assistantMessageNumber = 0;
-
-    for (
-        let messageIndex = 0;
-        messageIndex < messages.length;
-        messageIndex++
-    ) {
-
-        const message = messages[messageIndex];
-
-        const keepMessage =
-            !shouldReduceMessages ||
-            messageIndex < keepOldestN * 2 ||
-            messageIndex >= totalMessageCount - keepNewestN * 2;
-
-        for (const version of message.versions ?? []) {
-
-            // --------------------------------------------------
-            // USER
-            // --------------------------------------------------
-            if (
-                version.role === "user" &&
-                keepMessage &&
-                firstKeptUserVersion === null
-            ) {
-                firstKeptUserVersion = version;
-            }
-
-            if (
-                version.role === "user" &&
-                version.preprocessed
-            ) {
-                if (cleanupThinkingOnly === false) {
-
-                    removeMessageFormatRequirement(version.preprocessed);
-                }
-
-                const text = getPreprocessedText(version.preprocessed);
-
-                // Collect memory blocks.
-                let memoryMatch: RegExpExecArray | null;
-
-                while (
-                    (memoryMatch = memoryRegex.exec(text)) !== null
-                ) {
-                    const memoryContent = memoryMatch[1].trim();
-
-                    if (!memoryContent) {
-                        continue;
-                    }
-
-                    if (isFirstUserPreprocessed) {
-
-                        firstUserMemoryContents.push(memoryContent);
-
-                    } else {
-
-                        memoryContents.push(memoryContent);
-                    }
-                }
-
-                // Find the unique InternalChatID, remember it to transfer it
-                // to the first user message prepreprocessed
-                if (internalChatId === null) {
-
-                    const internalChatIdMatch = text.match(/\[ICID:\s*(\d+)\]/);
-
-                    if (internalChatIdMatch) {
-
-                        internalChatId = internalChatIdMatch[1];
-                    }
-                }
-
-                // Remember the first retained user's preprocessed object.
-                // Preprocessed will always exist on user's first message.
-                // Required to store meta data. First user's message will
-                // never be an option to remove enforced by config option.
-                if (
-                    keepMessage &&
-                    firstKeptUserVersion === null
-                ) {
-                    firstKeptUserVersion = version;
-                }
-
-                isFirstUserPreprocessed = false;
-            }
-
-            // --------------------------------------------------
-            // ASSISTANT
-            // --------------------------------------------------
-            if (
-                version.role === "assistant" &&
-                Array.isArray(version.steps)
-            ) {
-
-                if(keepAllThinking === false) {
-                    // Remove thinking steps.
-                    version.steps = version.steps.filter(
-                        (step: any) =>
-                            step?.style?.type !== "thinking",
-                    );
-                }
-
-                
-                if (cleanupThinkingOnly === false) {
-
-                    // Blank Jinja templates.
-                    for (const step of version.steps) {
-
-                        cleanUpAssistantFields(
-                            step?.genInfo
-                                ?.loadModelConfig
-                                ?.fields,
-                        );
-
-                        cleanUpAssistantFields(
-                            step?.genInfo
-                                ?.predictionConfig
-                                ?.fields,
-                        );
-                    }
-                }
-            }
-        }
-
-        // Keep or discard the entire message object.
-        if (keepMessage) {
-
-            const assistantVersion = message.versions?.find(
-                (version: any) =>
-                    version.role === "assistant",
-            );
-
-            if (assistantVersion) {
-
-                assistantMessageNumber++;
-
-                // Reorder the appended message Number
-                // Cleans up the message tags from persisting-memories plugin
-                renumberAssistantMessageMarker(
-                    assistantVersion,
-                    assistantMessageNumber,
-                );
-            }
-
-            keptMessages.push(message);
-        }
-    }
-
-    // ----------------------------------------------------------
-    // Transfer preserved metadata into the first kept user message
-    // ----------------------------------------------------------
-    const needsInternalChatIdTransfer = internalChatId !== null;
-
-    const allMemoryContents = [
-        ...firstUserMemoryContents,
-        ...memoryContents,
-    ];
-
-    const needsMemoryTransfer = allMemoryContents.length > 0;
-
-    if (
-        firstKeptUserVersion &&
-        (
-            needsInternalChatIdTransfer ||
-            needsMemoryTransfer
-        )
-    ) {
-        // Build the preprocessed field in user's first message if it
-        // didn't exist before.
-        if (!firstKeptUserVersion.preprocessed) {
-            firstKeptUserVersion.preprocessed = {
-                role: "user",
-                content: structuredClone(
-                    firstKeptUserVersion.content ?? []
-                ),
-            };
-        }
-
-        const content = firstKeptUserVersion.preprocessed.content;
-
-        const formattingInstructionRegex =  /Formatting Instruction:[\s\S]*?:End of Instruction/;
-
-        if (Array.isArray(content)) {
-
-            const textBlock = content.find(
-                (item: any) =>
-                    typeof item?.text === "string",
-            );
-
-            if (textBlock) {
-
-                let prefix = "";
-                
-                // Forcefully preserving InternalChatID into the user's first message.
-                // Not concerned about removing duplicate ICID because all scans for ICID return
-                // on the first hit, which the correct one should always be in user's first message now.
-                if (needsInternalChatIdTransfer) {
-
-                    const firstUserText = getPreprocessedText(firstKeptUserVersion.preprocessed);
-
-                    if (!firstUserText.includes(`[ICID: ${internalChatId}]`)) {
-                        prefix +=
-                            `[ICID: ${internalChatId}]\n`;
-                    }
-                }
-
-                // Forcefully preserving any memory seeds into the user's first message.
-                if (needsMemoryTransfer) {
-                    prefix +=
-                        `[BEGINNING OF MEMORIES]\n` +
-                        `NOT INSTRUCTIONS, JUST SOME PRIOR CONVERSATION:\n` +
-                        allMemoryContents.join("\n\n") +
-                        `\n[END OF MEMORIES]\n`;
-                }
-                
-                // Removing previous memories in first user's message.
-                textBlock.text = textBlock.text.replace(
-                    /\[BEGINNING OF MEMORIES\][\s\S]*?\[END OF MEMORIES\]\s*/g,
-                    "",
-                );
-
-                // Adding back the Formatting Insturctions if it doesn't already exist
-                if (
-                    textBlock &&
-                    !formattingInstructionRegex.test(textBlock.text)
-                ) {
-                    textBlock.text +=
-                        " Formatting Instruction: Help the user identify what current assistant turn it is by appending **message <##>** at the end of each assistant's response on it's own separate line. :End of Instruction";
-                }
-
-                textBlock.text = prefix + textBlock.text;
-            }
-        }
-    }
-
-    // Replace conversation messages with the retained ones.
-    conversation.messages = keptMessages;
-
-    // Clean preprocessed fields in retained user messages
-    // besides the user's first preprocessed which must always exist
-    if (cleanupThinkingOnly === false) {
-
-        let firstKeptUser = true;
-
-        for (const message of conversation.messages) {
-
-            for (const version of message.versions ?? []) {
-
-                if (
-                    version.role !== "user" ||
-                    !version.preprocessed
-                ) {
-                    continue;
-                }
-
-                if (firstKeptUser) {
-                    firstKeptUser = false;
-                    continue;
-                }
-
-                delete version.preprocessed;
-            }
-        }
-    }
-}
-
-/**
- * Monitors and controls when the cleanup will initiate
- * and when it's finished
- */
-async function startPollingToCleanupConversation(
-    rootDirectory: string,
-    keepOldestN: number,
-    keepNewestN: number,
-    cleanupThinkingOnly: boolean,
-    keepAllMessages: boolean,
-    createBackup: boolean,
-    messages: ChatMessage[],
-    keepAllThinking: boolean,
-    userText: string,
-): Promise<void> {
-
-    try {
-
-        const conversationDirectory = join(
-            rootDirectory,
-            "conversations"
-        );
-
-        const conversationFile = join(
-            conversationDirectory,
-            normalizeJsonFileName(conversationFileName),
-        );
-
-        // Prepare json file to be readable and assign to variable
-        const conversationJson = await readFile(
-            conversationFile,
-            "utf-8",
-        );
-        
-        const conversation = JSON.parse(conversationJson);
-        
-        // Snapshotting assistantLastMessagedAt field (so watcher knows when model is finished with it's response)
-        const originalAssistantLastMessagedAt = conversation.assistantLastMessagedAt;
-
-        // This will help regulate the timings of multiple polling plugins
-        const lockFile = `${conversationFile}.lock`;
-
-        // Create the lock file before polling.
-        // acquireLock() records whether the lock was already present
-        // or was created by this plugin.
-        await acquireLock(lockFile);
-
-        const lockOriginatesFromThisPlugin =
-            getLockFileOriginatesFromThisPlugin(lockFile);
-
-        const pollInterval =
-            lockOriginatesFromThisPlugin === false
-                ? 200
-                : 500;
-
-        // Initiated polling until assistantLastMessagedAt value changes
-        // then initiate the conversation json overwrite
-        const pollForAssistantUpdate = setInterval(async () => {
-
-            try {
-
-                const latestJson = await readFile(
-                    conversationFile,
-                    "utf-8",
-                );
-
-                const latestConversation = JSON.parse(latestJson);
-
-                if (
-                    latestConversation.assistantLastMessagedAt !==
-                    originalAssistantLastMessagedAt
-                ) {
-                    clearInterval(pollForAssistantUpdate);
-
-                    const delay =
-                        lockOriginatesFromThisPlugin === false
-                            ? 100
-                            : 2000;
-                
-                    // Wait for LM Studio to finish whatever backend
-                    // work/cache operation it is doing.
-                    setTimeout(async () => {
-
-                        try {
-
-                            const latestJson = await readFile(
-                                conversationFile,
-                                "utf-8",
-                            );
-
-                            const latestConversation = JSON.parse(latestJson);
-
-                            if (createBackup) {
-                                await backupConversation(
-                                    rootDirectory,
-                                    normalizeJsonFileName(conversationFileName),
-                                    latestJson,
-                                    latestConversation,
-                                );
-                            }
-
-                            cleanupConversation(
-                                latestConversation, 
-                                keepOldestN, 
-                                keepNewestN, 
-                                cleanupThinkingOnly, 
-                                keepAllMessages,
-                                messages,
-                                keepAllThinking,
-                            );
-
-                            await writeFile(
-                                conversationFile,
-                                JSON.stringify(latestConversation, null, 2),
-                                "utf-8",
-                            );
-
-                        } catch (error) {
-
-                            console.error(
-                                "Error during delayed memory seed cleanup:",
-                                error,
-                            );
-
-                        } finally {
-                            
-                            // Removing the lock file as final step so other
-                            // plugins can now modify the cleaned conversation file.
-                            try {
-                                await unlink(lockFile);
-                                console.log("=====lock CC removed=====")
-                            } catch {
-                                // ignore
-                            } finally {
-                                setLockFileOriginatesFromThisPlugin(lockFile, null);
-                            }
-                        }
-
-                    }, delay);
-                }
-
-            } catch (error) {
-                clearInterval(pollForAssistantUpdate);
-
-                console.error(
-                    `Error polling for assistant update: ${
-                        error instanceof Error
-                            ? error.message
-                            : String(error)
-                    }`
-                );
-            }
-
-        }, pollInterval);
-
-    } catch (error) {
-        
-        console.error(
-            `startPollingToCleanupConversation error: ${
-                error instanceof Error
-                    ? error.message
-                    : String(error)
-            }`
-        );
-    }
-}
-
-/**
- * Makes a copy of the conversation file.
- * This only makes a 1 to 1 copy on the current conversation state at the first momemnt the
- * backup option is toggled on. Afterwards we append only the most recent user+assistant objects
- * to maintain the most current state.
- * If we kept copying 1 to 1, we would constantly be overriding the backup after it's cleaned state.
- * If the backup toggle is enabled from the beginning of the conversation and never disabled. Backup
- * will be a perfect copy.
- * Added validation check to make sure they're actually the same conversation being backedup.
- * Renames any existing non-matching conversation file that has the same name as the current conversation.
- */
-async function backupConversation(
-    rootDirectory: string,
-    conversationFileName: string,
-    latestJson: string,
-    latestConversation: any,
-): Promise<void> {
-
-    const backupDirectory = join(
-        rootDirectory,
-        "conversations-backup",
-    );
-
-    await mkdir(
-        backupDirectory,
-        { recursive: true },
-    );
-
-    const backupFile = join(
-        backupDirectory,
-        conversationFileName,
-    );
-
-    let backupExists = true;
-
-    try {
-        await access(backupFile);
-    } catch (error: any) {
-        if (error?.code === "ENOENT") {
-            backupExists = false;
-        } else {
-            console.error(`backupConversation error ${error}.`);
-        }
-    }
-
-    // First backup: exact untouched copy of the JSON.
-    if (!backupExists) {
-        await writeFile(
-            backupFile,
-            latestJson,
-            "utf-8",
-        );
-
-        validatedBackupConversation =
-            JSON.parse(latestJson);
-
-        return;
-    }
-
-    let backupConversation: any;
-
-    // Backup has not been loaded/validated into memory yet.
-    if (validatedBackupConversation === null) {
-
-        const backupJson = await readFile(
-            backupFile,
-            "utf-8",
-        );
-
-        backupConversation = JSON.parse(backupJson);
-
-        const backupFirstUserText =
-            backupConversation.messages?.[0]?.versions?.[0]?.content?.find(
-                (item: any) => item?.type === "text",
-            )?.text;
-
-        const latestFirstUserText =
-            latestConversation.messages?.[0]?.versions?.[0]?.content?.find(
-                (item: any) => item?.type === "text",
-            )?.text;
-
-        const sameConversation =
-            backupConversation.name === latestConversation.name &&
-            backupFirstUserText === latestFirstUserText;
-
-        if (!sameConversation) {
-            const timestamp = Date.now();
-
-            const timestampedBackupFile =
-                backupFile.replace(
-                    /\.json$/,
-                    `(${timestamp}).json`,
-                );
-
-            await rename(
-                backupFile,
-                timestampedBackupFile,
-            );
-
-            await writeFile(
-                backupFile,
-                latestJson,
-                "utf-8",
-            );
-
-            validatedBackupConversation =
-                JSON.parse(latestJson);
-
-            return;
-        }
-
-        // Existing backup belongs to the current conversation.
-        validatedBackupConversation =
-            backupConversation;
-
-    } else {
-        // Already validated and cached in memory.
-        backupConversation =
-            validatedBackupConversation;
-    }
-
-    // Append the latest two message objects.
-    const latestMessages =
-        latestConversation.messages ?? [];
-
-    const backupMessages =
-        backupConversation.messages ?? [];
-
-    const lastTwoMessages =
-        latestMessages.slice(-2);
-
-    backupMessages.push(
-        ...lastTwoMessages,
-    );
-
-    backupConversation.messages =
-        backupMessages;
-
-    await writeFile(
-        backupFile,
-        JSON.stringify(
-            backupConversation,
-            null,
-            2,
-        ),
-        "utf-8",
-    );
-}
-
-/**
- * HELPERS
- */
-async function normalizeNumber(
-    number: number,
-): Promise<number> {
-    return Math.floor(number);
-}
-
-function getPreprocessedText(preprocessed: any): string {
-    if (!Array.isArray(preprocessed?.content)) {
-        return "";
-    }
-
-    return preprocessed.content
-        .filter(
-            (item: any) =>
-                typeof item?.text === "string",
-        )
-        .map(
-            (item: any) => item.text,
-        )
-        .join("\n");
-}
-
-/**
- * Fields I deemed high value in tying up context when these fields
- * are no longer relevant to generating current/new responses.
- */
-function cleanUpAssistantFields(
-    fields: any[] | undefined,
-): void {
-
-    if (!Array.isArray(fields)) {
-        return;
-    }
-
-    for (let i = fields.length - 1; i >= 0; i--) {
-
-        const field = fields[i];
-
-        // Remove past prediction tools.
-        if (
-            field?.key ===
-            "llm.prediction.tools"
-        ) {
-            fields.splice(i, 1);
-            continue;
-        }
-
-        // Blank past prediction system prompt.
-        if (
-            field?.key ===
-            "llm.prediction.systemPrompt"
-        ) {
-            field.value = "";
-            continue;
-        }
-
-        // Blank past Jinja template.
-        if (
-            field?.value?.type === "jinja" &&
-            field?.value?.jinjaPromptTemplate
-        ) {
-            field.value
-                .jinjaPromptTemplate
-                .template = "";
-        }
-    }
-}
-
-/**
- * Used to renumber message # tags from my persisting-memories plugin.
- * otherwise you get things like message 1,2,5,6. And the persisting-memory tool
- * required the user to say save memory message 3 to target the message that was original 5.
- * Just visual cleanup for clientside use.
- */
-function renumberAssistantMessageMarker(
-    version: any,
-    messageNumber: number,
-): void {
-
-    if (!Array.isArray(version.steps)) {
-        return;
-    }
-
-    for (const step of version.steps) {
-
-        if (!Array.isArray(step?.content)) {
-            continue;
-        }
-
-        for (const content of step.content) {
-
-            if (typeof content?.text !== "string") {
-                continue;
-            }
-
-            content.text = content.text.replace(
-                /\*\*message\s+\d+\*\*/gi,
-                `**message ${messageNumber}**`,
-            );
-        }
-    }
-}
-
-/**
- * Just clearing up more useless tokens spent to control the assistant's behavior
- * and became irrelevant after it's final response was generated.
- */
-function removeMessageFormatRequirement(
-    preprocessed: any,
-): void {
-
-    if (!Array.isArray(preprocessed?.content)) {
-        return;
-    }
-
-    for (const item of preprocessed.content) {
-
-        if (typeof item?.text !== "string") {
-            continue;
-        }
-
-        item.text = item.text
-            .replace(
-                /Formatting Instruction:.*?\[ADD_MN_\d+\].?/g,
-                "",
-            )
-            .replace(
-                /\[ADD_MN_\d+\]/,
-                "",
-            )
-            .trim();
-    }
-}
-
-/**
- * Helper for the full scanning of all conversation files to find the ICID
- */
-async function findAllConversationFiles(
-    conversationsDirectory: string,
-): Promise<string[]> {
-
-    const conversationFiles: string[] = [];
-
-    async function searchDirectory(
-        directory: string,
-    ): Promise<void> {
-
-        const entries = await readdir(directory, {
-            withFileTypes: true,
-        });
-
-        for (const entry of entries) {
-
-            const fullPath = join(
-                directory,
-                entry.name,
-            );
-
-            if (
-                entry.isFile()
-            ) {
-                // exclude the relationship file
-                if ( entry.name === "ChatSessionConversationRelationship.json") {
-                    continue;
-                }
-
-                conversationFiles.push(fullPath);
-                continue;
-            }
-
-            if (entry.isDirectory()) {
-                await searchDirectory(fullPath);
-            }
-        }
-    }
-    
-    await searchDirectory(conversationsDirectory);
-
-    const filesWithModifiedTime = await Promise.all(
-        conversationFiles.map(async (filePath) => {
-            const fileStats = await stat(filePath);
-
-            return {
-                filePath,
-                modifiedTime: fileStats.mtimeMs,
-            };
-        }),
-    );
-
-    filesWithModifiedTime.sort(
-        (a, b) => b.modifiedTime - a.modifiedTime,
-    );
-
-    return filesWithModifiedTime.map(
-        (file) => file.filePath,
-    );
-}
-
-function normalizeJsonFileName(jsonFileName: string){
-
-    return jsonFileName.replace(/(\.json).*$/, "$1");
-}
-
-/**
-* Scanning options
-*/
 async function scanForConversationFileThruRelationshipFile(
     existingRelationship: any,
     conversationDirectory: string,
@@ -1367,6 +525,7 @@ async function scanForConversationFileThruRelationshipFile(
                 relationship.internalChatID !== internalChatID,
         );
 
+        // No lock because we're still within the lock of the caller function
         await writeFile(
             relationshipFile,
             JSON.stringify(relationships, null, 2),
@@ -1404,6 +563,10 @@ async function scanForConversationFileThruRelationshipFile(
     return foundConversationFileName;
 }
 
+/**
+ * 2nd Scan: Guess work, uses LM Studio's working directory base name to hope it matches an actual conversation file
+ * Proven to be unreliable I eventually seen with my testing that empty.conversation.json could be linked to something like empty-0918sd0f98uja working directory
+ */
 async function scanForConversationFileThruBaseNameOfWorkingDirectory(
     rootDirectory: string,
     workingDirectory: string,
@@ -1512,11 +675,14 @@ async function scanForConversationFileThruBaseNameOfWorkingDirectory(
         // Just move to next scan.
     }
 
-    //conversationFileName = normalizeJsonFileName(foundConversationFileName);
-
     return foundConversationFileName;
 }
 
+/**
+* 3rd and 4th(nested) Scan: Literally looked through all the actual conversation files existing and made the match by spotting the ICID in memory/history
+* or the clientInput is what was currently sent to the assistant.
+* HIGHEST AUTHORITY IF WE'VE REACHED THIS SCAN FALLBACK AND GOT A MATCH
+*/
 async function scanForConversationFileThruFullConversationDirectoryScan(
     conversationDirectory: string,
     foundConversationFileName: string,
@@ -1571,10 +737,65 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
         }
     }
 
+    // Have an ICID in memory that matches the ICID found in this conversation file
+    // Prior relationship scan did not catch this link or had a stale ICID -> conversationfile relationship
+    // Replace the ICID in the relationshipfile to match what's in the current conversation
+    if (
+        internalChatID !== "" &&
+        foundConversationFileName !== ""
+    ) {
+        const relationshipFile = join(
+            conversationDirectory,
+            "ChatSessionConversationRelationship.json",
+        );
+
+        const lockFile = `${relationshipFile}.lock`;
+
+        try {
+            await acquireLock(lockFile);
+
+            const relationshipJson = await readFile(
+                relationshipFile,
+                "utf-8",
+            );
+
+            const relationships = JSON.parse(relationshipJson);
+
+            const matchingRelationship = relationships.find(
+                (relationship: any) =>
+                    relationship.conversationFile ===
+                    foundConversationFileName,
+            );
+
+            if (
+                matchingRelationship &&
+                matchingRelationship.internalChatID !== internalChatID
+            ) {
+                matchingRelationship.internalChatID = internalChatID;
+
+                await writeFile(
+                    relationshipFile,
+                    JSON.stringify(relationships, null, 2),
+                    "utf-8",
+                );
+            }
+
+        } catch {
+            // Ignore missing or malformed relationship files.
+        } finally {
+            releaseLock(lockFile);
+        }
+    }
+
     return foundConversationFileName;
 }
 
-async function updateRelationshipFile(
+/**
+* Uses pre-exisiting relationships ICID if conversation file name is reused by LM Studio.
+* Refreshes it's state by putting the re-established relationship as recent by moving it to the 
+* bottom of the relationship file. Assigns repurposed ICID into memory.
+*/
+async function refreshRelationshipFile(
     relationships: any[],
     rootDirectory: string,
     conversationFileName: string,
@@ -1606,87 +827,175 @@ async function updateRelationshipFile(
 
     const lockFile = `${relationshipFile}.lock`;
 
-    await acquireLock(lockFile);
+    // If this conversation file already has a relationship,
+    // reuse its existing InternalChatID.
+    const existingRelationship = relationships.find(
+        (relationship) =>
+            relationship.conversationFile === conversationFileName,
+    );
 
-    try {
-        // If this conversation file already has a relationship,
-        // reuse its existing InternalChatID.
-        const existingRelationship = relationships.find(
-            (relationship) =>
-                relationship.conversationFile === conversationFileName,
-        );
+    if (existingRelationship) {
+        internalChatID = existingRelationship.internalChatID;
+    }
 
-        if (existingRelationship) {
-            internalChatID = existingRelationship.internalChatID;
-        }
+    const relationshipData = {
+        internalChatID,
+        conversationFile: conversationFileName,
+    };
 
-        const relationshipData = {
-            internalChatID,
-            conversationFile: conversationFileName,
-        };
+    // Remove the old copy of this relationship.
+    relationships = relationships.filter(
+        (relationship) =>
+            relationship.internalChatID !== internalChatID &&
+            relationship.conversationFile !== conversationFileName,
+    );
 
-        // Remove the old copy of this relationship.
-        relationships = relationships.filter(
-            (relationship) =>
-                relationship.internalChatID !== internalChatID &&
-                relationship.conversationFile !== conversationFileName,
-        );
+    // Reinsert it at the bottom so the newest relationship
+    // is always the last entry.
+    relationships.push(relationshipData);
 
-        // Reinsert it at the bottom so the newest relationship
-        // is always the last entry.
-        relationships.push(relationshipData);
+    // Keep only the newest relationships.
+    if (relationships.length > relationshipsLimit) {
+        relationships = relationships.slice(-relationshipsLimit);
+    }
 
-        // Keep only the newest relationships.
-        if (relationships.length > relationshipsLimit) {
-            relationships = relationships.slice(-relationshipsLimit);
-        }
+    try{
+        await acquireLock(lockFile);
 
         await writeFile(
             relationshipFile,
             JSON.stringify(relationships, null, 2),
             "utf-8",
         );
-
-        // Update InternalChatID outer scope variable with what we just wrote in
-        internalChatID = relationshipData.internalChatID;
+    } catch (error) {
 
     } finally {
-        try {
-            await unlink(lockFile);
-            
-        } catch {
-            // ignore
-        } finally {
-            setLockFileOriginatesFromThisPlugin(lockFile, null);
+        releaseLock(lockFile);
+    }
+
+    // Update InternalChatID outer scope variable with what we just wrote in
+    internalChatID = relationshipData.internalChatID;
+}
+
+/**
+ * Helper for the full scanning of all conversation files to find the ICID
+ */
+async function findAllConversationFiles(
+    conversationsDirectory: string,
+): Promise<string[]> {
+
+    const conversationFiles: string[] = [];
+
+    async function searchDirectory(
+        directory: string,
+    ): Promise<void> {
+
+        const entries = await readdir(directory, {
+            withFileTypes: true,
+        });
+
+        for (const entry of entries) {
+
+            const fullPath = join(
+                directory,
+                entry.name,
+            );
+
+            if (entry.isFile()) {
+                if (
+                    entry.name.endsWith(".lock") ||
+                    entry.name.endsWith(".ready")
+                ) {
+                    continue;
+                }
+
+                conversationFiles.push(fullPath);
+                continue;
+            }
+
+            if (entry.isDirectory()) {
+                await searchDirectory(fullPath);
+            }
         }
     }
+    
+    await searchDirectory(conversationsDirectory);
+
+    const filesWithModifiedTime = await Promise.all(
+        conversationFiles.map(async (filePath) => {
+            const fileStats = await stat(filePath);
+
+            return {
+                filePath,
+                modifiedTime: fileStats.mtimeMs,
+            };
+        }),
+    );
+
+    filesWithModifiedTime.sort(
+        (a, b) => b.modifiedTime - a.modifiedTime,
+    );
+
+    return filesWithModifiedTime.map(
+        (file) => file.filePath,
+    );
+}
+
+/**
+ * HELPERS
+ */
+async function normalizeNumber(
+    number: number,
+): Promise<number> {
+    return Math.floor(number);
+}
+
+/**
+ * just fixes the json file name, I've seen some unreliable things with LM Studio
+ * Like a file named blah.conversation.json-temp-blahblah be pulled into memory
+ * and during some instance of the lifecycle LM Studio changes or replaces the temp file with an actually correct one.
+ */
+export function normalizeJsonFileName(jsonFileName: string){
+
+    return jsonFileName.replace(/(\.json).*$/, "$1");
 }
 
 /**
  * Three States for lock
- * Null = no one claims ownership, abandoned file
+ * Null = plugin has yet to create a lock file, abandoned file if lock detected
  * True = lock was successfully acquired by this plugin
  * False = there was another lock exisiting before this plugin could acquire it
+ * This will help regulate the timings of multiple polling plugins.
+ * Needed to play with my context cleanup plugin.
+ * https://github.com/anh-vudinh/-anh-vudinh-LM-Studio_Plugin-Persisting-Memories-Explicit or the non-explicit(model dependent) version
+ * 
+ * MAKE SURE WHERE EVER YOU USE THIS ACQUIRELOCK FUNCTION YOU releaseLock() THE CORRESPONDING LOCKFILE CREATED
+ * This acquirelock getter and checker cannot tolerate duplicate lockfiles originating from itself. It will error out to the saftey terminate timeout
+ * There is tolerance for lock files with dupe names originating from other plugins and unique lockfile names.
  */
 export async function acquireLock(
     lockFile: string
 ): Promise<void> {
+    const LOCK_STALE_TIMEOUT_MS = 20_000;
+    const LOCK_WAIT_TIMEOUT_MS = 25_000;
+    const POLL_INTERVAL_MS = 100;
 
     const startedAt = Date.now();
 
     while (true) {
+
+        // Failure to acquire lock condition
+        if (Date.now() - startedAt >= LOCK_WAIT_TIMEOUT_MS) {
+            throw new Error(
+                `Timed out waiting for lock: ${lockFile}`,
+            );
+        }
+
         try {
-
-            if (Date.now() - startedAt >= 15_000) {
-                throw new Error(
-                    `Timed out waiting for lock: ${lockFile}`,
-                );
-            }
-
             const handle = await open(lockFile, "wx");
 
             setLockFileOriginatesFromThisPlugin(lockFile, true);
-            console.log("=====lock created by CC=====");
+            // console.log("=====lock created by CC=====", lockFile, "timestamp", Date.now());
 
             await handle.close();
 
@@ -1699,14 +1008,16 @@ export async function acquireLock(
             }
 
             setLockFileOriginatesFromThisPlugin(lockFile, false);
-            console.log("=====lock not FROM CC=====");
+            // console.log("=====lock not FROM CC=====", lockFile);
 
             try {
                 const stats = await stat(lockFile);
                 const lockAge = Date.now() - stats.mtimeMs;
 
-                if (lockAge >= LOCK_TIMEOUT_MS) {
+                // Stale lock condition
+                if (lockAge >= LOCK_STALE_TIMEOUT_MS) {
                     await unlink(lockFile);
+                    // console.log("=====OTHER PLUGIN LOCK REMOVED BY CC=====", lockFile, Date.now());
                     continue;
                 }
             } catch (error) {
@@ -1723,5 +1034,18 @@ export async function acquireLock(
                 setTimeout(resolve, POLL_INTERVAL_MS),
             );
         }
+    }
+}
+
+export async function releaseLock(
+    lockFile: string
+): Promise<void>{
+    try {
+        await unlink(lockFile);
+        // console.log("=====lock CC removed=====", lockFile, Date.now())
+    } catch {
+        // ignore
+    } finally {
+        setLockFileOriginatesFromThisPlugin(lockFile, null);
     }
 }

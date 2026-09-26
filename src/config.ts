@@ -9,6 +9,7 @@ export const configSchematics = createConfigSchematics()
     {
       displayName: "Cleanup Context?",
       hint: "ON or OFF context cleanup. Must be enabled to use plugin.",
+      warning: "Keep ON if you want to use any of these features.",
     },
     true
   )
@@ -51,6 +52,7 @@ export const configSchematics = createConfigSchematics()
     {
       displayName: "OVERRIDE: Cleanup But Keep All Messages",
       warning: "All messages will be kept after cleanup. This ignores the truncation system.",
+      hint: "Truncation Disabled -- Cleanups performed: | Thinking | System prompt | Jinja | Tools | Preprocessed |",
     },
     false
   )
@@ -60,7 +62,7 @@ export const configSchematics = createConfigSchematics()
     {
       displayName: "OVERRIDE: Cleanup Thinking Context Only",
       warning: "Only cleans the thinking tokens. All extra cleanups provided by default are ignored.",
-      hint: "Cleanups for past messages: | Thinking |",
+      hint: "Cleanups performed: | Thinking |",
     },
     false
   )
@@ -68,9 +70,9 @@ export const configSchematics = createConfigSchematics()
     "keepAllThinking",
     "boolean",
     {
-      displayName: "OVERRIDE: Keep all thinking tokens",
-      warning: "Cleanup but keeps all the thinking tokens.",
-      hint: "Cleanups for past messages: | System prompt | Jinja | Tools | Preprocessed |",
+      displayName: "OVERRIDE: Keep All Thinking Context",
+      warning: "Performs all cleanups allowed but keeps all thinking.",
+      hint: "Cleanups performed: | System prompt | Jinja | Tools | Preprocessed |",
     },
     false
   )
@@ -78,13 +80,17 @@ export const configSchematics = createConfigSchematics()
     "createBackup",
     "boolean",
     {
-      displayName: "EXTRA: Maintain an Uncleaned Backup",
+      displayName: "EXTRA: Maintain an Uncleaned Backup of this conversation",
       warning: "Backup saved in .lmstudio\\conversations-backup folder.",
-      hint: "A the moment of enabling creates an exact copy. Subsequent backups only maintain the copy by append in your latest user/assistant turn. "
+      hint: "At the moment of enabling creates an exact copy. Subsequent backups only maintain the copy's freshness by append in your latest user/assistant turn."
     },
     false
   )
   .build();
+
+// ============================================================
+// Lock File Origin States
+// ============================================================
 
 export function setLockFileOriginatesFromThisPlugin(
     lockFile: string,
@@ -97,4 +103,19 @@ export function getLockFileOriginatesFromThisPlugin(
     lockFile: string,
 ): boolean | null {
     return lockFileOwnership.get(lockFile) ?? null;
+}
+
+// ============================================================
+// Backup State
+// ============================================================
+let validatedBackupConversation: any = null;
+
+export function setValidatedBackupConversation(
+    conversation: any,
+): void {
+    validatedBackupConversation = conversation;
+}
+
+export function getValidatedBackupConversation(): any {
+    return validatedBackupConversation;
 }
