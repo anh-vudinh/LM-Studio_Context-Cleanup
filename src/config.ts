@@ -119,3 +119,41 @@ export function setValidatedBackupConversation(
 export function getValidatedBackupConversation(): any {
     return validatedBackupConversation;
 }
+
+// ============================================================
+// Save Memory Parameters States (No guarantee these states remain alive through subsequent turns)
+// ============================================================
+
+let saveMemoryNumber: number | null = null;
+let saveMemoryCategory: string | null = null;
+let saveMemoryName: string | null = null;
+
+export function setSaveMemoryNumber(value: number | null): void {
+    saveMemoryNumber = value;
+}
+
+export function getSaveMemoryNumber(): number | null {
+    return saveMemoryNumber;
+}
+
+export function setSaveMemoryCategory(value: string | null): void {
+    saveMemoryCategory = value;
+}
+
+export function getSaveMemoryCategory(): string | null {
+    return saveMemoryCategory;
+}
+
+export function setSaveMemoryName(value: string | null): void {
+    saveMemoryName = value;
+}
+
+export function getSaveMemoryName(): string | null {
+    return saveMemoryName;
+}
+
+export function resetSaveMemoryParameters(): void {
+    saveMemoryNumber = null;
+    saveMemoryCategory = null;
+    saveMemoryName = null;
+}

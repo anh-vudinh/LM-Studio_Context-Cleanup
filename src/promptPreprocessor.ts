@@ -1,3 +1,5 @@
+import type { ChatMessage, PromptPreprocessorController } from "@lmstudio/sdk";
+import { saveMemoryCommandTracker } from "./saveMemoryCommandTracker";
 import { startPollingToCleanupConversation } from "./cleanupConversation";
 import { join, basename } from "node:path";
 import path from "node:path";
@@ -5,6 +7,10 @@ import os from "os";
 
 import {
     configSchematics,
+    getSaveMemoryCategory,
+    getSaveMemoryName,
+    getSaveMemoryNumber,
+    resetSaveMemoryParameters,
     setLockFileOriginatesFromThisPlugin,
 } from "./config";
 
@@ -17,11 +23,6 @@ import {
     unlink,
     open
 } from "node:fs/promises";
-
-import type {
-    ChatMessage,
-    PromptPreprocessorController,
-} from "@lmstudio/sdk";
 
 let conversationFileName = "";
 let internalChatID = "";
@@ -60,7 +61,11 @@ export async function promptPreprocessor(
     const keepAllThinking = config.get("keepAllThinking") as boolean;
     let createNewInternalChatID = false;
 
-    if (contextCleanup === true) {
+    saveMemoryCommandTracker(userText);
+
+    const saveMemoryCommandIsInProgress = getSaveMemoryNumber() !== null || getSaveMemoryCategory() !== null || getSaveMemoryName() !== null;
+
+    if (contextCleanup === true && saveMemoryCommandIsInProgress === false) {
         const userMessageCount = messages.filter(
             message => message.getRole() === "user"
         ).length + 1;
@@ -139,9 +144,24 @@ export async function promptPreprocessor(
                     assistantMessageCount,
                     conversationFileName,
                 )
-                // console.log("======ran CC default cleanup branch", Date.now())
             }
         }
+    }
+
+    // We're resetting the state assuming the string has now saved, because the work flow is that
+    // Persiting Memories has the lead in processing by the time we execute Context Cleanup Functions,
+    // we will be able to cleanup messages on the upcoming turn
+    const currentSaveMemoryNumber = getSaveMemoryNumber();
+    const currentSaveMemoryCategory = getSaveMemoryCategory();
+    const currentSaveMemoryName = getSaveMemoryName();
+
+    const allRequiredFieldsKnown =
+        currentSaveMemoryNumber !== null &&
+        (currentSaveMemoryCategory !== null && currentSaveMemoryCategory !== "") &&
+        (currentSaveMemoryName !== null && currentSaveMemoryName !== "");
+
+    if(allRequiredFieldsKnown) {
+        resetSaveMemoryParameters();
     }
 
     return createNewInternalChatID
@@ -983,7 +1003,6 @@ export async function acquireLock(
     const POLL_INTERVAL_MS = 100;
 
     const startedAt = Date.now();
-
     while (true) {
 
         // Failure to acquire lock condition

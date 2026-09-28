@@ -3,16 +3,10 @@
 
 - **This Plugin** - [GitHub - Context Cleanup](https://github.com/anh-vudinh/LM-Studio_Context-Cleanup) | [LMStudio](https://lmstudio.ai/anhuvdinh/context-cleanup)
 
-
-- **Optional Compatible Plugins** (I recommend the Explicit over the Model Dependent version)
+- **Optional Compatible Plugins** (I recommend the Explicit over the Model Dependent version, regardless either work and the choice is up to your tastes.)
   [GitHub - Persisting Memories Explicit](https://github.com/anh-vudinh/LM-Studio_Plugin-Persisting-Memories-Explicit) | [LMStudio - Persisting Memories Explicit](https://lmstudio.ai/anhuvdinh/persisting-memories-explicit)
 
-
-- **Model dependent version has not yet been made compatible with the latest version of this plugin. I will update this README when it is fixed.**
-
-
   [GitHub - Persisting Memories (Model Dependent)](https://github.com/anh-vudinh/LM-Studio_Plugin-Persisting-Memories) | [LMStudio - Persisting Memories (Model Dependent)](https://lmstudio.ai/anhuvdinh/persisting-memories)
-
 
 - Tested on Windows 11 Pro 25H2 — LM Studio 0.4.24
 
@@ -20,8 +14,7 @@
 ## Introduction
 
 
-The **Context Cleanup** plugin gives users real-time control over trimming the amount of conversation history that stays tied up during a chat session, without them having to manually prune old turns or wait for the threshold where LM Studio determines the context window is full enough to begin truncation. This plugin accomplishes that by using the prompt preprocessor hook and maintaining the respective conversation file so only relevant information stays loaded — freeing up portions of the context window that were consumed by irrelevant data in the current turn.
-
+The **Context Cleanup** plugin gives users real-time control over auto trimming the amount of conversation history that stays tied up during a chat session, without them having to manually prune old turns or wait for the threshold where LM Studio determines the context window is full enough to begin truncation. This plugin accomplishes that by using the prompt preprocessor hook and maintaining the respective conversation file so only relevant information stays loaded — freeing up portions of the context window that were consumed by irrelevant data in the current turn.
 
 ## Table of Contents
 
@@ -115,6 +108,8 @@ Cleanup Thinking Context Only + Keep All Thinking Context = No cleanups are perf
 
 The plugin relies on LM Studio's local storage layout and manages a few files/folders automatically as part of its operation:
 
+> New
+> When used alongside my Persisting Memories Plugin, context cleanup has been barred during an ongoing save memory command. Either finish up the save memory command, type `exit save memory`, or reinitialize the plugin by timeout (idle 20 seconds) or restart to reset the values stored in memory.
 
 | Path / File | Role in Cleanup |
 | :--- | :--- |
@@ -127,7 +122,6 @@ The plugin relies on LM Studio's local storage layout and manages a few files/fo
 
 
 ## Limitations or Notes
-
 
 - Just like my Persisting Memories plugin, this plugin must also respect the 2-second time window after the assistant has finished its response before any modifications to the conversation file / chat session stick and don't get overwritten by a cached version. This 2-second window is very short — users will not even notice it pass, so you should not need to intentionally hold back your normal flow. If the chat is engaged with during that 2-second window, the drawback is minimal: cleanup simply commences on the next trigger.
 - Unfortunately, this is the best I can do given the limited functionality granted by LM Studio and the quirks/oddities of their program's flow. But the options are robust enough to give users the control they lack over their context being tied up and accumulating from irrelevant past tokens. I targeted the biggest context wasters without compromising the underlying structure of the conversation. There are some fields still available to be cleaned, but I think that would be overly aggressive for little return.

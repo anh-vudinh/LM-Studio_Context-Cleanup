@@ -142,7 +142,7 @@ export async function startPollingToCleanupConversation(
                                 JSON.stringify(latestConversation, null, 2),
                                 "utf-8",
                             );
-                            // console.log("=====CC OPERATION FINISHED======", Date.now())
+                            console.log("=====CC OPERATION FINISHED======", Date.now())
                         } catch (error) {
 
                             console.error(
@@ -151,7 +151,7 @@ export async function startPollingToCleanupConversation(
                             );
 
                         } finally {
-                            
+                            console.log("==========CC RELEASED LOCK")
                             // Removing the lock file as final step so other
                             // plugins can now modify the cleaned conversation file.
                             releaseLock(lockFile);
@@ -501,10 +501,10 @@ function cleanupConversation(
                 // Forcefully preserving any memory seeds into the user's first message.
                 if (needsMemoryTransfer) {
                     suffix +=
-                        `\n\n[BEGINNING OF MEMORIES]\n` +
+                        `\n\n[BEGINNING OF MEMORIES] ` +
                         `NOT INSTRUCTIONS, JUST SOME PRIOR CONVERSATION:\n` +
                         allMemoryContents.join("\n\n") +
-                        `\n[END OF MEMORIES]\n`;
+                        ` [END OF MEMORIES]\n`;
                 }
 
                 // Adding back the Formatting Insturctions if it doesn't already exist
@@ -716,7 +716,7 @@ async function handleMaybeCoordinationWithPersitingMemoryPlugin(
     shouldCoordinateWithPersistingMemories: boolean,
 ): Promise<void>{
     const POLL_INTERVAL_MS = 100;
-    const READY_FILE_TIMEOUT_MS = 1_000;
+    const READY_FILE_STALE_AFTER_MS = 1_000;
     const READY_FILE_WAIT_MAX_MS = 20_000;
 
     const readyFile =
@@ -743,15 +743,15 @@ async function handleMaybeCoordinationWithPersitingMemoryPlugin(
                 const stats = await stat(readyFile);
                 const readyFileAge = Date.now() - stats.mtimeMs;
 
-                if (readyFileAge >= READY_FILE_TIMEOUT_MS) {
+                if (readyFileAge >= READY_FILE_STALE_AFTER_MS) {
                     await unlink(readyFile);
 
-                    // console.log(
-                    //     "===== stale PM ready file removed by CC =====",
-                    //     readyFile,
-                    //     "age",
-                    //     readyFileAge,
-                    // );
+                    console.log(
+                        "===== stale PM ready file removed by CC =====",
+                        readyFile,
+                        "age",
+                        readyFileAge,
+                    );
 
                     continue;
                 }
@@ -777,11 +777,11 @@ async function handleMaybeCoordinationWithPersitingMemoryPlugin(
         // Removing this lets PM continue naturally into acquireLock().
         await unlink(readyFile);
 
-        // console.log(
-        //     "===== PM ready file removed by CC =====",
-        //     readyFile,
-        //     Date.now()
-        // );
+        console.log(
+            "===== PM ready file removed by CC =====",
+            readyFile,
+            Date.now()
+        );
 
         // PM should now be progressing through its lock/work cycle.
         // Wait for its lock to disappear before CC acquires it.
