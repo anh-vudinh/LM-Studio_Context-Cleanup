@@ -142,7 +142,7 @@ export async function startPollingToCleanupConversation(
                                 JSON.stringify(latestConversation, null, 2),
                                 "utf-8",
                             );
-                            console.log("=====CC OPERATION FINISHED======", Date.now())
+                            // console.log("=====CC OPERATION FINISHED======", Date.now())
                         } catch (error) {
 
                             console.error(
@@ -151,7 +151,7 @@ export async function startPollingToCleanupConversation(
                             );
 
                         } finally {
-                            console.log("==========CC RELEASED LOCK")
+                            // console.log("==========CC RELEASED LOCK")
                             // Removing the lock file as final step so other
                             // plugins can now modify the cleaned conversation file.
                             releaseLock(lockFile);
@@ -746,12 +746,12 @@ async function handleMaybeCoordinationWithPersitingMemoryPlugin(
                 if (readyFileAge >= READY_FILE_STALE_AFTER_MS) {
                     await unlink(readyFile);
 
-                    console.log(
-                        "===== stale PM ready file removed by CC =====",
-                        readyFile,
-                        "age",
-                        readyFileAge,
-                    );
+                    // console.log(
+                    //     "===== stale PM ready file removed by CC =====",
+                    //     readyFile,
+                    //     "age",
+                    //     readyFileAge,
+                    // );
 
                     continue;
                 }
@@ -777,11 +777,11 @@ async function handleMaybeCoordinationWithPersitingMemoryPlugin(
         // Removing this lets PM continue naturally into acquireLock().
         await unlink(readyFile);
 
-        console.log(
-            "===== PM ready file removed by CC =====",
-            readyFile,
-            Date.now()
-        );
+        // console.log(
+        //     "===== PM ready file removed by CC =====",
+        //     readyFile,
+        //     Date.now()
+        // );
 
         // PM should now be progressing through its lock/work cycle.
         // Wait for its lock to disappear before CC acquires it.
