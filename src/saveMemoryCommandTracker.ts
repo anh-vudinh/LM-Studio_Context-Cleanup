@@ -47,10 +47,10 @@ export async function saveMemoryCommandTracker(
     // Category and/or Memory Name was missing. Expect to retrieve it.
     if (saveMemoryCommandQueued) {
         const CATEGORY_EXTRACT_REGEX =
-            /\b(?:category|categroy|categary|categry|catgry|catagory|catgory|categoy)\b\s+(?:is\s+)?([^;,.]+)/i;
+            /\b(?:memory\s*)?(?:category|categroy|categary|categry|catgry|catagory|catgory|categoy)\b\s+(?:is\s+)?([^;,.]+)/i;
 
         const NAME_EXTRACT_REGEX =
-            /\b(?:name|nmae|nam|nme)\b\s+(?:is\s+)?([^;,.]+)/i;
+            /^(?:memory\s*)?(?:name|nmae|nam|nme)\b\s+(?:is\s+)?([^;,.]+)/i;
 
         if(getSaveMemoryCategory() === null){
             const saveMemoryCategoryMatch = userText.match(CATEGORY_EXTRACT_REGEX);
