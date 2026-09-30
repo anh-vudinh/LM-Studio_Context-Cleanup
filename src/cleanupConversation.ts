@@ -1,4 +1,6 @@
 import { backupConversation } from "./backupConversation";
+import { normalizeJsonFileName } from "./promptPreprocessor";
+import { acquireLock, releaseLock } from "./acquireLockFile";
 import { join } from "node:path";
 
 import {
@@ -7,12 +9,6 @@ import {
     stat,
     unlink
 } from "node:fs/promises";
-
-import {
-    normalizeJsonFileName,
-    acquireLock,
-    releaseLock,
-} from "./promptPreprocessor";
 
 /**
  * Monitors and controls when the cleanup will initiate
@@ -40,11 +36,6 @@ export async function startPollingToCleanupConversation(
             normalizeJsonFileName(conversationFileName),
         );
         
-        // Create the lock file before polling.
-        // acquireLock() records whether the lock was already present
-        // or was created by this plugin.
-        //await acquireLock(lockFile);
-
         // Prepare json file to be readable and assign to variable
         const conversationJson = await readFile(
             conversationFile,
@@ -73,13 +64,13 @@ export async function startPollingToCleanupConversation(
 
         const shouldCoordinateWithPersistingMemories = hasContextCleanup && hasPersistingMemories;
 
-        await handleMaybeCoordinationWithPersitingMemoryPlugin(conversationFile, shouldCoordinateWithPersistingMemories);
+        const functionName = "startPollingToCleanupConversation";
+
+        await handleMaybeCoordinationWithPersitingMemoryPlugin(conversationFile, shouldCoordinateWithPersistingMemories, functionName);
 
         // This will help regulate the timings of multiple polling plugins
         // Lock created after we did the first read to establish the originalAssistantLastMessagedAt
         const lockFile = `${conversationFile}.lock`;
-
-        // await acquireLock(lockFile);
 
         const pollInterval = shouldCoordinateWithPersistingMemories
                 ? 500   // interval when another plugin created the lock file, shorter interval to act timely
@@ -151,10 +142,10 @@ export async function startPollingToCleanupConversation(
                             );
 
                         } finally {
-                            // console.log("==========CC RELEASED LOCK")
+                            // console.log("==========CC TIMEOUT RELEASED LOCK")
                             // Removing the lock file as final step so other
                             // plugins can now modify the cleaned conversation file.
-                            releaseLock(lockFile);
+                            releaseLock(lockFile, functionName);
                         }
                     }, delay);
                 }
@@ -714,6 +705,7 @@ function removeMessageFormatRequirement(
 async function handleMaybeCoordinationWithPersitingMemoryPlugin(
     conversationFile: string,
     shouldCoordinateWithPersistingMemories: boolean,
+    functionName: string,
 ): Promise<void>{
     const POLL_INTERVAL_MS = 100;
     const READY_FILE_STALE_AFTER_MS = 1_000;
@@ -804,5 +796,5 @@ async function handleMaybeCoordinationWithPersitingMemoryPlugin(
         }
     }
 
-    await acquireLock(lockFile);
+    await acquireLock(lockFile, functionName);
 }

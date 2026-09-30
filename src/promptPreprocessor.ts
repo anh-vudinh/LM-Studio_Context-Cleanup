@@ -1,6 +1,7 @@
 import type { ChatMessage, PromptPreprocessorController } from "@lmstudio/sdk";
 import { saveMemoryCommandTracker } from "./saveMemoryCommandTracker";
 import { startPollingToCleanupConversation } from "./cleanupConversation";
+import { acquireLock, releaseLock } from "./acquireLockFile";
 import { join, basename } from "node:path";
 import path from "node:path";
 import os from "os";
@@ -11,7 +12,6 @@ import {
     getSaveMemoryName,
     getSaveMemoryNumber,
     resetSaveMemoryParameters,
-    setLockFileOriginatesFromThisPlugin,
 } from "./config";
 
 import { 
@@ -19,9 +19,7 @@ import {
     writeFile, 
     access, 
     readdir, 
-    stat, 
-    unlink,
-    open
+    stat,
 } from "node:fs/promises";
 
 let conversationFileName = "";
@@ -150,7 +148,9 @@ export async function promptPreprocessor(
 
     // We're resetting the state assuming the string has now saved, because the work flow is that
     // Persiting Memories has the lead in processing by the time we execute Context Cleanup Functions,
-    // we will be able to cleanup messages on the upcoming turn
+    // we will be able to cleanup messages on the upcoming turn.
+    // This does not need to do anything specific with a save memory command, just know it exists/is happening.
+    // So no need to distinguish the saveMemoryEndRangeNumber.
     const currentSaveMemoryNumber = getSaveMemoryNumber();
     const currentSaveMemoryCategory = getSaveMemoryCategory();
     const currentSaveMemoryName = getSaveMemoryName();
@@ -368,141 +368,154 @@ async function promptProcessorScanForConversationFile(
         "ChatSessionConversationRelationship.json",
     );
 
-    // Read the relationship file
+    const lockFile = `${relationshipFile}.lock`;
+
+    const functionName = "promptProcessorScanForConversationFile";
+
+    await acquireLock(lockFile, functionName);
+
     try {
-        const relationshipJson = await readFile(
-            relationshipFile,
-            "utf-8",
-        );
-
-        relationships = JSON.parse(relationshipJson);
-
-    } catch {
-        // File doesn't exist yet, so we'll create it in a later step.
-    }
-
-    // We've already found or assigned an InternalChatID
-    // Take the ICID check if there is an existing relationship
-    // in the relationship json.
-    const existingRelationship = relationships.find(
-        (relationship) =>
-            relationship.internalChatID === internalChatID,
-    );
-
-    // 1st SCAN:
-    // STEP 1: If there is a current relationship, check if the
-    // conversation file still exists. If the file does not exist,
-    if (existingRelationship) {
-
-        foundConversationFileName = await scanForConversationFileThruRelationshipFile(
-            existingRelationship,
-            conversationDirectory,
-            foundConversationFileName,
-            relationships,
-            relationshipFile,
-        )
-
-        if(foundConversationFileName !== "") {
-
-            return foundConversationFileName
-        }
-
-    } else {
-        // No relationships matched the current InternalChatID in memory.
-        // The ICID may be newly generated and not yet established
-        // I had a suspicion WD may be unreliable even though most times it matched. LM Studio does wierd things.
-        // I saw an empty.conversation.json be paired with a WD of empty-asd0293jcoa01, which would obviously fail my check.
-        // Removing the random letter/numbers is not acceptable for the match because who's to say LMS wont create empty-2038sadfjl32i at the same time.
-        const directoryBaseNameFromWD = basename(workingDirectory);
-
-        const conversationFileNameInScope = `${directoryBaseNameFromWD}.conversation.json`;
-
-        const existingConversationRelationship = relationships.find(
-            (relationship) =>
-                relationship.conversationFile === conversationFileNameInScope,
-        );
-
-        if (existingConversationRelationship) {
-
-            // This conversation file name already has a relationship,
-            // update the InternalChatID in the relationship file.
-            const relationshipData = {
-                internalChatID,
-                conversationFile: conversationFileNameInScope,
-            };
-
-            // Remove the old copy of this relationship.
-            relationships = relationships.filter(
-                (relationship) =>
-                    relationship.conversationFile !== conversationFileNameInScope,
-            );
-
-            // Reinsert it at the bottom so the newest relationship
-            // is always the last entry.
-            relationships.push(relationshipData);
-
-            // Keep only the newest relationships.
-            if (relationships.length > relationshipsLimit) {
-                relationships = relationships.slice(-relationshipsLimit);
-            }
-
-            await writeFile(
+        // Read the relationship file
+        try {
+            const relationshipJson = await readFile(
                 relationshipFile,
-                JSON.stringify(relationships, null, 2),
                 "utf-8",
             );
 
-            // Update InternalChatID outer scope variable with what we just wrote in
-            internalChatID = relationshipData.internalChatID;
-            conversationFileName = normalizeJsonFileName(conversationFileNameInScope);
+            relationships = JSON.parse(relationshipJson);
 
-            return conversationFileNameInScope;
+        } catch {
+            // File doesn't exist yet, so we'll create it in a later step.
         }
-    }
 
-    // 2nd SCAN:
-    // STEP 3: Check if the basename of WD is a match for the conversation file.
-    // Brand new ICID was generated, this will link that new ICID to the foundConvversationFileName
-    if (foundConversationFileName === "") {
+        // Rest of Scan Logic
 
-        foundConversationFileName = await scanForConversationFileThruBaseNameOfWorkingDirectory(
-            rootDirectory,
-            workingDirectory,
-            conversationDirectory,
-            foundConversationFileName,
-            userText,
-        )
-    }
-
-    // 3rd SCAN:
-    // STEP 4: Scan each conversation file starting from the newest.
-    // HIGHEST AUTHORITY FOUND THE CONVERSATION NAME AND OR INTERNALCHAT ID.
-    // Has the authority to correct the relationship link
-    if (foundConversationFileName === "") {
-
-        foundConversationFileName = await scanForConversationFileThruFullConversationDirectoryScan(
-            conversationDirectory,
-            foundConversationFileName,
-            userText,
-        )
-    }
-
-    // FINAL STEP:
-    // If we found a conversation file through STEP 3 or STEP 4,
-    // create/update the relationship in ChatSessionConversationRelationship.json.
-    if (foundConversationFileName !== "") {
-
-        refreshRelationshipFile(
-            relationships,
-            rootDirectory,
-            foundConversationFileName,
+        // We've already found or assigned an InternalChatID
+        // Take the ICID check if there is an existing relationship
+        // in the relationship json.
+        const existingRelationship = relationships.find(
+            (relationship) =>
+                relationship.internalChatID === internalChatID,
         );
+
+        // 1st SCAN:
+        // STEP 1: If there is a current relationship, check if the
+        // conversation file still exists. If the file does not exist,
+        if (existingRelationship) {
+
+            foundConversationFileName = await scanForConversationFileThruRelationshipFile(
+                existingRelationship,
+                conversationDirectory,
+                foundConversationFileName,
+                relationships,
+                relationshipFile,
+            )
+
+            if(foundConversationFileName !== "") {
+
+                return foundConversationFileName
+            }
+
+        } else {
+            // No relationships matched the current InternalChatID in memory.
+            // The ICID may be newly generated and not yet established
+            // I had a suspicion WD may be unreliable even though most times it matched. LM Studio does wierd things.
+            // I saw an empty.conversation.json be paired with a WD of empty-asd0293jcoa01, which would obviously fail my check.
+            // Removing the random letter/numbers is not acceptable for the match because who's to say LMS wont create empty-2038sadfjl32i at the same time.
+            const directoryBaseNameFromWD = basename(workingDirectory);
+
+            const conversationFileNameInScope = `${directoryBaseNameFromWD}.conversation.json`;
+
+            const existingConversationRelationship = relationships.find(
+                (relationship) =>
+                    relationship.conversationFile === conversationFileNameInScope,
+            );
+
+            if (existingConversationRelationship) {
+
+                // This conversation file name already has a relationship,
+                // update the InternalChatID in the relationship file.
+                const relationshipData = {
+                    internalChatID,
+                    conversationFile: conversationFileNameInScope,
+                };
+
+                // Remove the old copy of this relationship.
+                relationships = relationships.filter(
+                    (relationship) =>
+                        relationship.conversationFile !== conversationFileNameInScope,
+                );
+
+                // Reinsert it at the bottom so the newest relationship
+                // is always the last entry.
+                relationships.push(relationshipData);
+
+                // Keep only the newest relationships.
+                if (relationships.length > relationshipsLimit) {
+                    relationships = relationships.slice(-relationshipsLimit);
+                }
+
+                await writeFile(
+                    relationshipFile,
+                    JSON.stringify(relationships, null, 2),
+                    "utf-8",
+                );
+
+                // Update InternalChatID outer scope variable with what we just wrote in
+                internalChatID = relationshipData.internalChatID;
+                conversationFileName = normalizeJsonFileName(conversationFileNameInScope);
+
+                return conversationFileNameInScope;
+            }
+        }
+
+        // 2nd SCAN:
+        // STEP 3: Check if the basename of WD is a match for the conversation file.
+        // Brand new ICID was generated, this will link that new ICID to the foundConvversationFileName
+        if (foundConversationFileName === "") {
+
+            foundConversationFileName = await scanForConversationFileThruBaseNameOfWorkingDirectory(
+                rootDirectory,
+                workingDirectory,
+                conversationDirectory,
+                foundConversationFileName,
+                userText,
+            )
+        }
+
+        // 3rd SCAN:
+        // STEP 4: Scan each conversation file starting from the newest.
+        // HIGHEST AUTHORITY FOUND THE CONVERSATION NAME AND OR INTERNALCHAT ID.
+        // Has the authority to correct the relationship link
+        if (foundConversationFileName === "") {
+
+            foundConversationFileName = await scanForConversationFileThruFullConversationDirectoryScan(
+                conversationDirectory,
+                foundConversationFileName,
+                userText,
+            )
+        }
+
+        // FINAL STEP:
+        // If we found a conversation file through STEP 3 or STEP 4,
+        // create/update the relationship in ChatSessionConversationRelationship.json.
+        if (foundConversationFileName !== "") {
+
+            await refreshRelationshipFile(
+                relationships,
+                rootDirectory,
+                foundConversationFileName,
+            );
+        }
+
+        // Set config state after scanning and relationship persistence.
+        conversationFileName = normalizeJsonFileName(foundConversationFileName);
+
+        return foundConversationFileName;
+
+    }  finally {
+        await releaseLock(lockFile, functionName);
     }
-
-    // Set config state after scanning and relationship persistence.
-    conversationFileName = normalizeJsonFileName(foundConversationFileName);
-
-    return foundConversationFileName;
 }
 
 //-------------------------------
@@ -767,11 +780,7 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
             "ChatSessionConversationRelationship.json",
         );
 
-        const lockFile = `${relationshipFile}.lock`;
-
         try {
-            await acquireLock(lockFile);
-
             const relationshipJson = await readFile(
                 relationshipFile,
                 "utf-8",
@@ -800,8 +809,6 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
 
         } catch {
             // Ignore missing or malformed relationship files.
-        } finally {
-            releaseLock(lockFile);
         }
     }
 
@@ -843,8 +850,6 @@ async function refreshRelationshipFile(
         // File doesn't exist yet, so we'll create it in a later step.
     }
 
-    const lockFile = `${relationshipFile}.lock`;
-
     // If this conversation file already has a relationship,
     // reuse its existing InternalChatID.
     const existingRelationship = relationships.find(
@@ -877,19 +882,11 @@ async function refreshRelationshipFile(
         relationships = relationships.slice(-relationshipsLimit);
     }
 
-    try{
-        await acquireLock(lockFile);
-
-        await writeFile(
-            relationshipFile,
-            JSON.stringify(relationships, null, 2),
-            "utf-8",
-        );
-    } catch (error) {
-
-    } finally {
-        releaseLock(lockFile);
-    }
+    await writeFile(
+        relationshipFile,
+        JSON.stringify(relationships, null, 2),
+        "utf-8",
+    );
 
     // Update InternalChatID outer scope variable with what we just wrote in
     internalChatID = relationshipData.internalChatID;
@@ -980,93 +977,4 @@ async function normalizeNumber(
 export function normalizeJsonFileName(jsonFileName: string){
 
     return jsonFileName.replace(/(\.json).*$/, "$1");
-}
-
-/**
- * Three States for lock
- * Null = plugin has yet to create a lock file, abandoned file if lock detected
- * True = lock was successfully acquired by this plugin
- * False = there was another lock exisiting before this plugin could acquire it
- * This will help regulate the timings of multiple polling plugins.
- * Needed to play with my context cleanup plugin.
- * https://github.com/anh-vudinh/-anh-vudinh-LM-Studio_Plugin-Persisting-Memories-Explicit or the non-explicit(model dependent) version
- * 
- * MAKE SURE WHERE EVER YOU USE THIS ACQUIRELOCK FUNCTION YOU releaseLock() THE CORRESPONDING LOCKFILE CREATED
- * This acquirelock getter and checker cannot tolerate duplicate lockfiles originating from itself. It will error out to the saftey terminate timeout
- * There is tolerance for lock files with dupe names originating from other plugins and unique lockfile names.
- */
-export async function acquireLock(
-    lockFile: string
-): Promise<void> {
-    const LOCK_STALE_TIMEOUT_MS = 20_000;
-    const LOCK_WAIT_TIMEOUT_MS = 25_000;
-    const POLL_INTERVAL_MS = 100;
-
-    const startedAt = Date.now();
-    while (true) {
-
-        // Failure to acquire lock condition
-        if (Date.now() - startedAt >= LOCK_WAIT_TIMEOUT_MS) {
-            throw new Error(
-                `Timed out waiting for lock: ${lockFile}`,
-            );
-        }
-
-        try {
-            const handle = await open(lockFile, "wx");
-
-            setLockFileOriginatesFromThisPlugin(lockFile, true);
-            // console.log("=====lock created by CC=====", lockFile, "timestamp", Date.now());
-
-            await handle.close();
-
-            return;
-        } catch (error) {
-            const fsError = error as NodeJS.ErrnoException;
-
-            if (fsError.code !== "EEXIST") {
-                throw error;
-            }
-
-            setLockFileOriginatesFromThisPlugin(lockFile, false);
-            // console.log("=====lock not FROM CC=====", lockFile);
-
-            try {
-                const stats = await stat(lockFile);
-                const lockAge = Date.now() - stats.mtimeMs;
-
-                // Stale lock condition
-                if (lockAge >= LOCK_STALE_TIMEOUT_MS) {
-                    await unlink(lockFile);
-                    // console.log("=====OTHER PLUGIN LOCK REMOVED BY CC=====", lockFile, Date.now());
-                    continue;
-                }
-            } catch (error) {
-                const fsError = error as NodeJS.ErrnoException;
-
-                if (fsError.code !== "ENOENT") {
-                    throw error;
-                }
-
-                continue;
-            }
-
-            await new Promise<void>((resolve) =>
-                setTimeout(resolve, POLL_INTERVAL_MS),
-            );
-        }
-    }
-}
-
-export async function releaseLock(
-    lockFile: string
-): Promise<void>{
-    try {
-        await unlink(lockFile);
-        // console.log("=====lock CC removed=====", lockFile, Date.now())
-    } catch {
-        // ignore
-    } finally {
-        setLockFileOriginatesFromThisPlugin(lockFile, null);
-    }
 }

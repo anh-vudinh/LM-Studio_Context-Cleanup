@@ -10,6 +10,14 @@
 
 - Tested on Windows 11 Pro 25H2 — LM Studio 0.4.24
 
+## New Additions
+
+1) Standarized save memory regex between the this plugin and the other two persisting memories plugins.
+
+2) Imported the more advanced acquirelock from my PM plugin into this plugin.
+
+3) Fixed bug with calling refreshRelationshipFile, forgot to await.
+
 
 ## Introduction
 
@@ -108,8 +116,7 @@ Cleanup Thinking Context Only + Keep All Thinking Context = No cleanups are perf
 
 The plugin relies on LM Studio's local storage layout and manages a few files/folders automatically as part of its operation:
 
-> New
-> When used alongside my Persisting Memories Plugin, context cleanup has been barred during an ongoing save memory command. Either finish up the save memory command, type `exit save memory`, or reinitialize the plugin by timeout (idle 20 seconds) or restart to reset the values stored in memory.
+When used alongside my Persisting Memories Plugin, context cleanup has been barred during an ongoing save memory command. Either finish up the save memory command, type `exit save memory`, or reinitialize the plugin by timeout (idle 20 seconds) or restart to reset the values stored in memory.
 
 | Path / File | Role in Cleanup |
 | :--- | :--- |

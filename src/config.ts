@@ -1,7 +1,5 @@
 import { createConfigSchematics } from "@lmstudio/sdk";
 
-const lockFileOwnership = new Map<string, boolean | null>();
-
 export const configSchematics = createConfigSchematics()
   .field(
     "contextCleanup",
@@ -89,23 +87,6 @@ export const configSchematics = createConfigSchematics()
   .build();
 
 // ============================================================
-// Lock File Origin States
-// ============================================================
-
-export function setLockFileOriginatesFromThisPlugin(
-    lockFile: string,
-    value: boolean | null,
-): void {
-    lockFileOwnership.set(lockFile, value);
-}
-
-export function getLockFileOriginatesFromThisPlugin(
-    lockFile: string,
-): boolean | null {
-    return lockFileOwnership.get(lockFile) ?? null;
-}
-
-// ============================================================
 // Backup State
 // ============================================================
 let validatedBackupConversation: any = null;
@@ -127,6 +108,7 @@ export function getValidatedBackupConversation(): any {
 let saveMemoryNumber: number | null = null;
 let saveMemoryCategory: string | null = null;
 let saveMemoryName: string | null = null;
+let saveMemoryNumberEndRange: number | null = null;
 
 export function setSaveMemoryNumber(value: number | null): void {
     saveMemoryNumber = value;
@@ -152,8 +134,17 @@ export function getSaveMemoryName(): string | null {
     return saveMemoryName;
 }
 
+export function setSaveMemoryNumberEndRange(value: number | null): void {
+    saveMemoryNumberEndRange = value;
+}
+
+export function getSaveMemoryNumberEndRange(): number | null {
+    return saveMemoryNumberEndRange;
+}
+
 export function resetSaveMemoryParameters(): void {
     saveMemoryNumber = null;
     saveMemoryCategory = null;
     saveMemoryName = null;
+    saveMemoryNumberEndRange = null;
 }
