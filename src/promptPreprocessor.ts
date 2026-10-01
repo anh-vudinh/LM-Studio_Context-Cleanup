@@ -281,6 +281,8 @@ async function maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
     const functionName = "maybeRepairRelationshipFileWithKnownICIDAndConversationFile";
 
     try{
+        await acquireLock(lockFile, functionName);
+
         const relationshipJson = await readFile(
             relationshipFile,
             "utf-8",
@@ -308,30 +310,24 @@ async function maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
         // (must create a lock file with it's inherent delay)
         //---------------------------
         if (!relationship) {
-            try {
-                await acquireLock(lockFile, functionName);
+                
+            relationships.push({
+                internalChatID: internalChatID,
+                conversationFile: conversationFileName,
+            });
 
-                relationships.push({
-                    internalChatID: internalChatID,
-                    conversationFile: conversationFileName,
-                });
-
-                // Keep only the newest relationships.
-                if (relationships.length > relationshipsLimit) {
-                    relationships = relationships.slice(-relationshipsLimit);
-                }
-
-                await writeFile(
-                    relationshipFile,
-                    JSON.stringify(relationships, null, 2),
-                    "utf-8",
-                );
-
-                return true;
-
-            } finally {
-                await releaseLock(lockFile, functionName);
+            // Keep only the newest relationships.
+            if (relationships.length > relationshipsLimit) {
+                relationships = relationships.slice(-relationshipsLimit);
             }
+
+            await writeFile(
+                relationshipFile,
+                JSON.stringify(relationships, null, 2),
+                "utf-8",
+            );
+
+            return true;
         }
 
         //---------------------------
@@ -350,7 +346,10 @@ async function maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
 
     } catch (error) {
         // move along
+    } finally {
+        await releaseLock(lockFile, functionName);
     }
+
     return false;
 }
 
@@ -695,7 +694,7 @@ async function promptProcessorTryWorkingDirectoryConversationFile(
 
         if (internalChatIDPattern.test(conversationJson)) {
             setConversationFileName(normalizeJsonFileName(conversationFileName));
-            console.log("======conversation file validated through scanForConversationFileThruBaseNameOfWorkingDirectory ICID MATCH", conversationFileName);
+
             return;
         }
 
@@ -715,8 +714,8 @@ async function promptProcessorTryWorkingDirectoryConversationFile(
             clientInput.length > 0 &&
             input.startsWith(clientInput)
         ) {
-            // console.log("======conversation file validated through scanForConversationFileThruBaseNameOfWorkingDirectory CLIENT INPUT MATCH", foundConversationFileNameInScope);
             setConversationFileName(normalizeJsonFileName(conversationFileName));
+
             return;
         }
 
@@ -763,7 +762,7 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
         if (internalChatIDPattern.test(conversationJson)) {
 
             setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
-            console.log(normalizeJsonFileName(basename(conversationFile)));
+
             break;
         }
 
@@ -809,6 +808,8 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
     // We should now have both ICID and ConversationFileName in memory
     // Check the relationship file if it already exists, if not we need to create it
     try {
+        await acquireLock(lockFile, functionName);
+
         const relationshipJson = await readFile(
             relationshipFile,
             "utf-8",
@@ -829,72 +830,67 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
             return;
         }
 
-        console.log("currentConversationFileName",currentConversationFileName)
         // If there was not a perfect match, we need to create a new one or modify an old existing relationship
-        try {
 
-            await acquireLock(lockFile, functionName);
+        const matchingIndexes = relationships
+            .map((relationship, index) => ({
+                relationship,
+                index,
+            }))
+            .filter(
+                ({ relationship }) =>
+                    relationship.internalChatID === getInternalChatID() ||
+                    relationship.conversationFile === getConversationFileName(),
+            );
 
-            const matchingIndexes = relationships
-                .map((relationship, index) => ({
-                    relationship,
-                    index,
-                }))
-                .filter(
-                    ({ relationship }) =>
-                        relationship.internalChatID === getInternalChatID() ||
-                        relationship.conversationFile === getConversationFileName(),
-                );
+        if (matchingIndexes.length > 0) {
 
-            if (matchingIndexes.length > 0) {
+            const filteredRelationships = relationships.filter(
+                (_, index) =>
+                    !matchingIndexes.some(
+                        (match) => match.index === index,
+                    ),
+            );
 
-                const filteredRelationships = relationships.filter(
-                    (_, index) =>
-                        !matchingIndexes.some(
-                            (match) => match.index === index,
-                        ),
-                );
+            filteredRelationships.push({
+                internalChatID: getInternalChatID(),
+                conversationFile: getConversationFileName(),
+            });
 
-                filteredRelationships.push({
-                    internalChatID: getInternalChatID(),
-                    conversationFile: getConversationFileName(),
-                });
+            const relationshipsToWrite =
+                filteredRelationships.length > relationshipsLimit
+                    ? filteredRelationships.slice(-relationshipsLimit)
+                    : filteredRelationships;
 
-                const relationshipsToWrite =
-                    filteredRelationships.length > relationshipsLimit
-                        ? filteredRelationships.slice(-relationshipsLimit)
-                        : filteredRelationships;
+            await writeFile(
+                relationshipFile,
+                JSON.stringify(relationshipsToWrite, null, 4),
+                "utf-8",
+            );
 
-                await writeFile(
-                    relationshipFile,
-                    JSON.stringify(relationshipsToWrite, null, 4),
-                    "utf-8",
-                );
+        } else {
 
-            } else {
+            relationships.push({
+                internalChatID: getInternalChatID(),
+                conversationFile: getConversationFileName(),
+            });
 
-                relationships.push({
-                    internalChatID: getInternalChatID(),
-                    conversationFile: getConversationFileName(),
-                });
+            const relationshipsToWrite =
+                relationships.length > relationshipsLimit
+                    ? relationships.slice(-relationshipsLimit)
+                    : relationships;
 
-                const relationshipsToWrite =
-                    relationships.length > relationshipsLimit
-                        ? relationships.slice(-relationshipsLimit)
-                        : relationships;
-
-                await writeFile(
-                    relationshipFile,
-                    JSON.stringify(relationshipsToWrite, null, 4),
-                    "utf-8",
-                );
-            }
-        } finally {
-            await releaseLock(lockFile, functionName);
+            await writeFile(
+                relationshipFile,
+                JSON.stringify(relationshipsToWrite, null, 4),
+                "utf-8",
+            );
         }
 
     } catch (error: any) {
         console.error(`scanForConversationFileThruFullConversationDirectoryScan() error: ${error.message}`);
+    } finally {
+        await releaseLock(lockFile, functionName);
     }
 }
 
