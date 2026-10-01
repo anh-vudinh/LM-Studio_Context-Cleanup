@@ -10,14 +10,15 @@
 
 - Tested on Windows 11 Pro 25H2 — LM Studio 0.4.24
 
-## New Additions
+## New/Updated (10/1/2026)
 
 1) Standarized save memory regex between the this plugin and the other two persisting memories plugins.
 
 2) Imported the more advanced acquirelock from my PM plugin into this plugin.
 
-3) Fixed bug with calling refreshRelationshipFile, forgot to await.
+3) Redid the whole ICID and ConversationFileName scan logic flow. This was done to try and minimize the uptime or creation of a lock file for the relationship file.
 
+4) Moved ICID and CFN to a shared module-level state to conform to a similar standard as my PME plugin.
 
 ## Introduction
 

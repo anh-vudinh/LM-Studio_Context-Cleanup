@@ -8,30 +8,29 @@ import os from "os";
 
 import {
     configSchematics,
+    getConversationFileName,
+    getInternalChatID,
     getSaveMemoryCategory,
     getSaveMemoryName,
     getSaveMemoryNumber,
     resetSaveMemoryParameters,
+    setInternalChatID,
+    setConversationFileName,
 } from "./config";
 
 import { 
-    readFile, 
-    writeFile, 
-    access, 
-    readdir, 
+    readFile,
+    writeFile,
+    readdir,
     stat,
 } from "node:fs/promises";
 
-let conversationFileName = "";
-let internalChatID = "";
 const relationshipsLimit = 15;
 const minimumToStartCleaning = 3;
 
 /**
- * https://github.com/anh-vudinh
  * Main function that directs the flow of the plugin
 */
-
 export async function promptPreprocessor(
     ctl: PromptPreprocessorController,
     userMessage: ChatMessage,
@@ -61,8 +60,11 @@ export async function promptPreprocessor(
 
     saveMemoryCommandTracker(userText);
 
-    const saveMemoryCommandIsInProgress = getSaveMemoryNumber() !== null || getSaveMemoryCategory() !== null || getSaveMemoryName() !== null;
-
+    const saveMemoryCommandIsInProgress = 
+        getSaveMemoryNumber() !== null || 
+        getSaveMemoryCategory() !== null || 
+        getSaveMemoryName() !== null;
+   
     if (contextCleanup === true && saveMemoryCommandIsInProgress === false) {
         const userMessageCount = messages.filter(
             message => message.getRole() === "user"
@@ -78,58 +80,106 @@ export async function promptPreprocessor(
             userMessageCount >= minimumToStartCleaning) ||
             keepAllMessages === true
         ) {
-            // Repopulate InternalChatID if user purposely and manually deleted
-            // user's message 1
-            const foundHistoryChatID = await promptProcessorScanHistoryForID(messages);
 
-            // ICID exist in history still
-            if (foundHistoryChatID !== "") {
-                internalChatID = foundHistoryChatID;
-            }
-
-            // ICID not in memory or history
-            if (internalChatID === "" &&
-                foundHistoryChatID === ""
-            ) {
-                // Try to recover ICID through the relationship file.
-                // ICID will still be blank at this point
-                internalChatID = await promptProcessorRecoverChatID(
+            if(getInternalChatID() !== "" && getConversationFileName() !== "") {
+                // Check that the relationship exists in the relationship file.
+                // If it does not, add it. This is the extreme case user is deleting relationships directly from the file and their load bearing user message
+                // Two available options in the function, choose which one to enable. Each has it's pros or cons.
+                const relationshipReadded = await maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
                     lmStudioRootDirectory,
-                    internalChatID,
-                    normalizeJsonFileName(conversationFileName),
-                    workingDirectory,
-                    userText,
-                );
+                )
 
-                if (internalChatID !== "") {
+                if(relationshipReadded) {
                     createNewInternalChatID = true;
                 }
             }
 
-            // If we still do not know InternalChatID after the recovery
-            // We must create a new one
-            if (internalChatID === "") {
-                internalChatID = Math.floor(Date.now() / 1000).toString();
-                createNewInternalChatID = true;
+            // ICID UNKNOWN?
+            if (getInternalChatID() === "") {
+                // SCAN HISTORY IF FOUND ASSIGN IT TO THE INTERNAL MEMORY
+                const historyICID = await promptProcessorScanHistoryForID(messages);
+
+                //------------------------------------
+                // CONVERSATION FILE NAME KNOWN IN MEMORY BUT ICID UNKNOWN IN HISTORY (USER PROBABLY DELETED LOAD BEARING USER MESSAGE)
+                //------------------------------------
+
+                if(historyICID === "") {
+                    // Recover ICID through the relationship file
+                    const icidRecovered = await recoverICIDMultiStepMaybeSetConversationFileName(
+                        lmStudioRootDirectory,
+                        workingDirectory,
+                        userText,
+                    );
+
+                    if (icidRecovered) {
+                        createNewInternalChatID = true;
+                    }
+                }
+
+                //------------------------------------
+                // ICID UNKNOWN
+                //------------------------------------
+
+                // SCAN HISTORY FAILED
+                if(getInternalChatID() === "") {
+                    // SCAN IT THROUGH THE RELATIONSHIP FILE
+                    // WE'VE ALSO SET THE CONVERSATION FILE NAME HERE IF WE FOUND IT ALONGSIDE 
+                    // THE ICID WE MATCHED WHILE LOOKING THROUGH THE RELATIONSHIP FILE
+                    await promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFile(
+                        lmStudioRootDirectory,
+                        workingDirectory,
+                    );
+                }
+
+                // ICID COULD NOT BE FOUND AT ALL SO CREATE A FRESH ICID
+                if(getInternalChatID() === "") {
+                    setInternalChatID(Math.floor(Date.now() / 1000).toString());
+                    createNewInternalChatID = true;
+                }
             }
 
-            // Use the pre-existing InternalChatID found
-            // to find the matching conversation file
-            // Skip if we already know the conversation file
-            if (conversationFileName === "") {
+            //------------------------------------
+            // ICID NOW KNOWN
+            //------------------------------------
 
-                conversationFileName = await promptProcessorScanForConversationFile(
+            // CONVERSATION FILE NAME UKNOWN?
+            if (getConversationFileName() === "") {
+                
+                // CHECK THE RELATIONSHIP FILE
+                await promptProcessorMatchICIDInRelationshipFile(
                     lmStudioRootDirectory,
-                    userText,
-                    workingDirectory
                 );
 
-                conversationFileName = normalizeJsonFileName(conversationFileName);
+                // CHECK THE WORKING DIRECTORY BASE NAME FILE
+                // CHECK FOR A EMBEDDED ICID OR MATCHING CLIENTINPUT
+                if (getConversationFileName() === "") {
+                    await promptProcessorTryWorkingDirectoryConversationFile(
+                        lmStudioRootDirectory,
+                        workingDirectory,
+                        userText,
+                    );
+                }
             }
-        
+
+            // CHECK THE FULL CONVERSATION DIRECTORY FROM NEWEST TO OLDEST
+            // CONVERSATION FILES AND CHECK FOR EMBEDDED ICID OR MATCHING CLIENTINPUT
+            if(
+                getConversationFileName() === "" || 
+                createNewInternalChatID === true
+            ) {
+                await scanForConversationFileThruFullConversationDirectoryScan(
+                    lmStudioRootDirectory,
+                    userText,
+                );
+            }
+
+            //----------------------------------------------------
+            // CONVERSATION FILE NAME NOW KNOWN && ICID NOW KNOWN
+            //----------------------------------------------------
+
             // Final cleanup
             // Fires off only with a known conversation file, requirement to access the correct file
-            if (conversationFileName !== "") {
+            if (getConversationFileName() !== "") {
 
                 void startPollingToCleanupConversation(
                     lmStudioRootDirectory, 
@@ -140,7 +190,7 @@ export async function promptPreprocessor(
                     createBackup,
                     keepAllThinking,
                     assistantMessageCount,
-                    conversationFileName,
+                    getConversationFileName(),
                 )
             }
         }
@@ -165,27 +215,31 @@ export async function promptPreprocessor(
     }
 
     return createNewInternalChatID
-        ? `${userText}.            [ICID: ${internalChatID}] Ignore this ICID tag. `
+        ? `${userText}.                          [ICID: ${getInternalChatID()}] Ignore this ICID tag. `
         : userText;
 }
+
 
 /**             ______________________________________           
  *             |                                      |
  *             | LMSTUDIO LOVES TO DISCONNECT PLUGINS |
  *             |______________________________________|
  * 
- * FLOW OF SCAN →  promptProcessorScanHistoryForID()       →       promptProcessorRecoverChatID()           →          (GENERATE BRAND NEW ICID?)        →       promptProcessorScanForConversationFile()
- *                             ↓                                                ↓                                                                                                    ↓
- *                    (ICID FOUND YES/NO)                        (ICID already in memory? YES/NO)                                                              scanForConversationFileThruRelationshipFile()         → (CHECK AGAINST in memory ICID and relationship ICIDs | FOUND CONVO FILE YES/NO) → (CHECK AGAINST WD Base Name in Relationship file | FOUND CONVO YES/NO)
- *                                                                              ↓                                                                                                    ↓
- *                                                      scanForConversationFileThruBaseNameOfWorkingDirectory()                                              scanForConversationFileThruBaseNameOfWorkingDirectory() → (CHECK IF WD Base is a convo file, access it to check for in memory ICID | FOUND CONVO YES/NO) → (Fuzzy match clientInput to userText | FOUND CONVO YES/NO)
- *                                                                              ↓                                                                                                    ↓
- *                                                         (CONFIRMED CONVO FILE && || FOUND ICID YES/NO)                                                 scanForConversationFileThruFullConversationDirectoryScan() → (CHECK ALL convo files Match in memory ICID | FOUND YES/NO) → (Fuzzy match clientInput to userText | FOUND CONVO YES/NO) → (AUTHORITY TO UPDATE stale relationships once in memory ICID and Convo are known but mismatched)
- *                                                                                                                                                                                   ↓
- *                                                                                                                                                                        refreshRelationshipFile()                  → (If convo is known, ICID in convo is missing, relationship has ICID and convo paired, repurpose abandoned ICID & renew relationship. Overwrite in memory internalChatID variable with renewed ICID. This is to overwrite the newly generated ICID logic). 
- *                                                                                                                                                                                   ↓
- *                                                                                                                                *** CONVERSATION FILE AND ICID SHOULD NOW BE KNOWN & LINKED OTHERWISE THE CONVERSATION DOES NOT EXIST ***
+ * FLOW OF SCAN   →    maybeRepairRelationshipFileWithKnownICIDAndConversationFile()         →        promptProcessorScanHistoryForID()           →          recoverICIDMultiStepMaybeSetConversationFileName()              →        promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFile()        →       (Generate New ICID)      →           promptProcessorMatchICIDInRelationshipFile()              →           promptProcessorTryWorkingDirectoryConversationFile()             →             scanForConversationFileThruFullConversationDirectoryScan()
+ *                                                 ↓                                                                  ↓                                                               ↓                                                                                  ↓                                                                                                          ↓                                                                          ↓                                                                                 ↓
+ *                             (ICID && CONVO FILE IN MEMORY? YES/NO)                                     (ICID in history? YES/NO)                             (CFN in Relationship File? YES/NO | GET ICID)                        (Quick lazy check if WD base name is already an existing relationship)                                                (ICID Matches in Relationship File? YES/NO | Get CFN)                    (ICID found in WD Conversation.json? YES/NO | set CFN)                 (Scan through New -> Old Conversation.json Spotted ICID? YES/NO | set CFN)
+ *                                                 ↓                                                                  ↓                                                               ↓                                                                                  ↓                                                                                                                                                                                     ↓                                                                                 ↓
+ *                  (WRITE missing Relationship | Add ICID to History | Skip all Scans)                     (Add ICID to Memory)                  (Working Directory Base Name in Relationship File? YES/NO | GET ICID)                                 (Reuse pre-existing ICID + set CFN)                                                                                                                                            (ClientInput matches userText? YES/NO | set CFN)                         (During Scan check ClientInput matches userText? YES/NO | set CFN)
+ *                                                                                                                                                                                    ↓                                              ______________________________________________________________________                                                                                                                                                                                                                                      ↓
+ *                                                                                                                                                  (Scan allConversation Files New -> Old, Found matching clientInput)                                                                                                                                                                                                                                                                                        (WRITE Both CFN and ICID to relationship file if not already present)
+ *                                                                                                                                                (in conversation file match to relationship? YES/NO | GET ICID + SET CFN)  →  (Will reuse pre-existing ICID, BOTH ICID AND CFN KNOWN SKIP REMAINING SCANS)                                                                                                                                                                                                       (repair mismatch relationship if present in relationship file)
+ *                                                                                                                                                                                    ↓                                                                                                                                                                                                                                                                                                                                                          
+ *                                                                                                                                                          (ICID MUST BE KNOWN BY NOW, IF NOT. IT NEVER EXISTED)                                                                                                                                                                                                                                                                                                         
+ *                                                                                                                                                                                                                                                                                                                     
+ *                                                                                                                                                                                                                                                                                                                                               
+ *                                                                                                                                                                                                                                                                                                                            
  */
+
 
 /**
  * Try to recover InternalChatID tag if the users deleted it from chat.
@@ -195,109 +249,113 @@ interface ChatSessionConversationRelationship {
     conversationFile: string;
 }
 
+//-------------------------------
+// Scanning options
+//-------------------------------
+
 /**
-* Try and recover InternalChatID from in memory InternalChatID
-* or using the fallback of the scanForConversationFileThruBaseNameOfWorkingDirectory() scan
-* If either is impossible than there's no choice but to assign a new ICID
-*/
-async function promptProcessorRecoverChatID(
+ * Extraordinary case if the user purposely deletes both the relationship entry in the relationship file,
+ * and the user's message holding the ICID. We will reinsert the entry using the in memory data.
+ */
+async function maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
     rootDirectory: string,
-    internalChatID: string,
-    conversationFileName: string,
-    workingDirectory: string,
-    userText: string,
-): Promise<string> {
+): Promise<boolean> {
 
-    // If already available in memory, use it.
-    if (internalChatID !== "") {
-        return internalChatID;
-    }
-
-    // Construct the path to the conversation file
     const conversationDirectory = join(
         rootDirectory,
-        "conversations",
+        "conversations"
     );
 
+    // Point to the relationship file
     const relationshipFile = join(
         conversationDirectory,
         "ChatSessionConversationRelationship.json",
     );
 
-    // Cannot perform relationship lookup without a filename.
-    if (conversationFileName === "") {
-        
-        // Attempt a reverse lookup first using the basename of working directory
-        conversationFileName = await scanForConversationFileThruBaseNameOfWorkingDirectory(
-            rootDirectory,
-            workingDirectory,
-            conversationDirectory,
-            conversationFileName,
-            userText,
-        );
-        
-        // Conversation File Name still unknown, cannot resume with recovery
-        if(conversationFileName === "") {
-            return "";
-        }
-    }
+    const conversationFileName = getConversationFileName();
 
-    try {
-        
+    const internalChatID = getInternalChatID();
+
+    const lockFile = `${relationshipFile}.lock`;
+
+    const functionName = "maybeRepairRelationshipFileWithKnownICIDAndConversationFile";
+
+    try{
         const relationshipJson = await readFile(
             relationshipFile,
             "utf-8",
         );
 
-        const relationships: ChatSessionConversationRelationship[] =
+        let relationships: ChatSessionConversationRelationship[] =
             JSON.parse(relationshipJson);
 
-        // Search from newest to oldest.
-        // Grab the newest relationship that matches the coversation file name
-        // There cannot be two conversations files with the same exact name in a folder
-        // At worst we are repurposing an abandoned ICID rather than making a new one
-        for (
-            let i = relationships.length - 1;
-            i >= 0;
-            i--
-        ) {
+        relationships = relationships.filter(
+            (relationship) =>
+                relationship.internalChatID.trim() !== "" &&
+                relationship.conversationFile.trim() !== "",
+        );
 
-            const relationship = relationships[i];
+        const relationship = relationships.find(
+            (relationship) => relationship.conversationFile === conversationFileName &&
+                relationship.internalChatID === internalChatID
+        );
 
-            if (relationship.conversationFile === conversationFileName) {
-                return relationship.internalChatID;
+        // The exact relationship we have in memory is missing from the relationship file. CHOOSE ONLY ONE OPTION!!
+        // That can only mean the user deleted the load bearing user message and deleted the relationship manually
+
+        //---------------------------
+        // OPTION 1: REPAIR THE RELATIONSHIP FILE WITH IN MEMORY DATA 
+        // (must create a lock file with it's inherent delay)
+        //---------------------------
+        if (!relationship) {
+            try {
+                await acquireLock(lockFile, functionName);
+
+                relationships.push({
+                    internalChatID: internalChatID,
+                    conversationFile: conversationFileName,
+                });
+
+                // Keep only the newest relationships.
+                if (relationships.length > relationshipsLimit) {
+                    relationships = relationships.slice(-relationshipsLimit);
+                }
+
+                await writeFile(
+                    relationshipFile,
+                    JSON.stringify(relationships, null, 2),
+                    "utf-8",
+                );
+
+                return true;
+
+            } finally {
+                await releaseLock(lockFile, functionName);
             }
         }
 
-    } catch (error: any) {
+        //---------------------------
+        // OPTION 2: RESET THE IN MEMORY DATA SO WE CAN GO THROUGH THE NORMAL PROCESS OF CREATING A BRAND NEW LINK 
+        // (no lock file needed, no delay, just a quick read of the relationship file)
+        //---------------------------
+        // if (!relationship) {
+        //     setConversationFileName("");
+        //     setInternalChatID("");
+        // }
 
-        if (error instanceof SyntaxError) {
-
-            console.error(
-                `Relationship file JSON is corrupted: ${error.message}`,
-            );
-
-        } else if (error.code === "ENOENT") {
-
-            console.error(
-                "Relationship file not found.",
-            );
-
-        } else {
-
-            console.error(
-                `Relationship lookup failed: ${error}`,
-            );
+        // Relationship already exists in the file
+        if(relationship) {
+            return false;
         }
-    }
 
-    return "";
+    } catch (error) {
+        // move along
+    }
+    return false;
 }
 
 /**
  * Scans history for any exisiting ICID.
- * If used with my persisting-memory plugin, both plugins
- * have the ability to create an ICID if one doesn't already exist
  */
 async function promptProcessorScanHistoryForID(
     messages: ChatMessage[],
@@ -330,421 +388,389 @@ async function promptProcessorScanHistoryForID(
         }
     }
 
+    // So it does not overwrite an ICID already known in memory, but none exist in history(user deleted it)
+    if(searchedInternalChatID !== ""){
+        setInternalChatID(searchedInternalChatID);
+    }
+
     return searchedInternalChatID;
 }
 
 /**
-* Scan conversation folder to link the real-time chat to
-* it's associated conversation file. This enables the user to
-* not have to manually make the link for the plugin.
-* Trade off: more resources expended for great ease of use
-* 1st scan is ideal, later scans are fallbacks, each has it's early ending.
-* 1st scan: cheap - check the relationship file for an exisiting relationship.
-* 2nd scan: cheap - check the basename of workingdirectory, which "usually" matches the conversation file name,
-* reliability is uncertain but it's quick to see if the convo file is found and has the matching ICID
-* 3rd scan: expensive - scan each conversation file starting from newest to oldest until
-* we find the matching InternalChatID.
-* 4th scan: during the 3rd scan also check if clientInput = userText of most recent prompt preproccesor
-* Scan 3 and 4 are authoritative and will repair the association in relationshipfile if needed
-* LM Studio likes to reuse file names like empty.conversation.json
-*/
-async function promptProcessorScanForConversationFile(
+ * ICID marker in history has been lost, we will try to recover the CFN first through various methods to
+ * re-establish the past ICID used.
+ * CFN already in memory → check it against the relationship file
+ * CFN in memory missing → check WD base name against relationship file
+ * WD Base Name fails check → check from newest to oldest conversation files to match clientInput to userText = match means we now know the true conversation file name
+ * check for the pre-existing relationship in the relationship file and reuse it. Reinject the re-established ICID.
+ */
+async function recoverICIDMultiStepMaybeSetConversationFileName(
     rootDirectory: string,
-    userText: string,
     workingDirectory: string,
-): Promise<string> {
-    
-    let relationships: any[] = [];
-    let foundConversationFileName = conversationFileName;
+    userText: string,
+): Promise<boolean>{
 
-    // Construct the path to the conversation file
+    const conversationFileName = getConversationFileName();
+    
     const conversationDirectory = join(
         rootDirectory,
         "conversations"
     );
 
+    // Point to the relationship file
     const relationshipFile = join(
         conversationDirectory,
         "ChatSessionConversationRelationship.json",
     );
 
-    const lockFile = `${relationshipFile}.lock`;
-
-    const functionName = "promptProcessorScanForConversationFile";
-
-    await acquireLock(lockFile, functionName);
-
-    try {
-        // Read the relationship file
-        try {
+    // Conversation File Name still available in memory
+    if(conversationFileName !== "") {
+        try{
             const relationshipJson = await readFile(
                 relationshipFile,
                 "utf-8",
             );
 
-            relationships = JSON.parse(relationshipJson);
+            const relationships: ChatSessionConversationRelationship[] =
+                JSON.parse(relationshipJson);
+
+            const relationship = relationships.find(
+                (relationship) => relationship.conversationFile === conversationFileName
+            );
+
+            if(relationship) {
+                setInternalChatID(relationship.internalChatID);
+                return true;
+            }
 
         } catch {
-            // File doesn't exist yet, so we'll create it in a later step.
+            // move along
         }
-
-        // Rest of Scan Logic
-
-        // We've already found or assigned an InternalChatID
-        // Take the ICID check if there is an existing relationship
-        // in the relationship json.
-        const existingRelationship = relationships.find(
-            (relationship) =>
-                relationship.internalChatID === internalChatID,
-        );
-
-        // 1st SCAN:
-        // STEP 1: If there is a current relationship, check if the
-        // conversation file still exists. If the file does not exist,
-        if (existingRelationship) {
-
-            foundConversationFileName = await scanForConversationFileThruRelationshipFile(
-                existingRelationship,
-                conversationDirectory,
-                foundConversationFileName,
-                relationships,
-                relationshipFile,
-            )
-
-            if(foundConversationFileName !== "") {
-
-                return foundConversationFileName
-            }
-
-        } else {
-            // No relationships matched the current InternalChatID in memory.
-            // The ICID may be newly generated and not yet established
-            // I had a suspicion WD may be unreliable even though most times it matched. LM Studio does wierd things.
-            // I saw an empty.conversation.json be paired with a WD of empty-asd0293jcoa01, which would obviously fail my check.
-            // Removing the random letter/numbers is not acceptable for the match because who's to say LMS wont create empty-2038sadfjl32i at the same time.
-            const directoryBaseNameFromWD = basename(workingDirectory);
-
-            const conversationFileNameInScope = `${directoryBaseNameFromWD}.conversation.json`;
-
-            const existingConversationRelationship = relationships.find(
-                (relationship) =>
-                    relationship.conversationFile === conversationFileNameInScope,
-            );
-
-            if (existingConversationRelationship) {
-
-                // This conversation file name already has a relationship,
-                // update the InternalChatID in the relationship file.
-                const relationshipData = {
-                    internalChatID,
-                    conversationFile: conversationFileNameInScope,
-                };
-
-                // Remove the old copy of this relationship.
-                relationships = relationships.filter(
-                    (relationship) =>
-                        relationship.conversationFile !== conversationFileNameInScope,
-                );
-
-                // Reinsert it at the bottom so the newest relationship
-                // is always the last entry.
-                relationships.push(relationshipData);
-
-                // Keep only the newest relationships.
-                if (relationships.length > relationshipsLimit) {
-                    relationships = relationships.slice(-relationshipsLimit);
-                }
-
-                await writeFile(
-                    relationshipFile,
-                    JSON.stringify(relationships, null, 2),
-                    "utf-8",
-                );
-
-                // Update InternalChatID outer scope variable with what we just wrote in
-                internalChatID = relationshipData.internalChatID;
-                conversationFileName = normalizeJsonFileName(conversationFileNameInScope);
-
-                return conversationFileNameInScope;
-            }
-        }
-
-        // 2nd SCAN:
-        // STEP 3: Check if the basename of WD is a match for the conversation file.
-        // Brand new ICID was generated, this will link that new ICID to the foundConvversationFileName
-        if (foundConversationFileName === "") {
-
-            foundConversationFileName = await scanForConversationFileThruBaseNameOfWorkingDirectory(
-                rootDirectory,
-                workingDirectory,
-                conversationDirectory,
-                foundConversationFileName,
-                userText,
-            )
-        }
-
-        // 3rd SCAN:
-        // STEP 4: Scan each conversation file starting from the newest.
-        // HIGHEST AUTHORITY FOUND THE CONVERSATION NAME AND OR INTERNALCHAT ID.
-        // Has the authority to correct the relationship link
-        if (foundConversationFileName === "") {
-
-            foundConversationFileName = await scanForConversationFileThruFullConversationDirectoryScan(
-                conversationDirectory,
-                foundConversationFileName,
-                userText,
-            )
-        }
-
-        // FINAL STEP:
-        // If we found a conversation file through STEP 3 or STEP 4,
-        // create/update the relationship in ChatSessionConversationRelationship.json.
-        if (foundConversationFileName !== "") {
-
-            await refreshRelationshipFile(
-                relationships,
-                rootDirectory,
-                foundConversationFileName,
-            );
-        }
-
-        // Set config state after scanning and relationship persistence.
-        conversationFileName = normalizeJsonFileName(foundConversationFileName);
-
-        return foundConversationFileName;
-
-    }  finally {
-        await releaseLock(lockFile, functionName);
     }
-}
 
-//-------------------------------
-// Scanning options
-//-------------------------------
+    // FALLBACK: JUST A QUICK LOOK UP IF IT WORKS IT WORKS, IF NOT THAT'S ALL WE CAN DO
+    // Conversation File Name from Working Directory
+    const directoryBaseNameFromWD = basename(workingDirectory);
 
-/**
- * 1st Scan: Cheap look up in a small maintained 15 object(recent conversations) json
- */
-async function scanForConversationFileThruRelationshipFile(
-    existingRelationship: any,
-    conversationDirectory: string,
-    foundConversationFileName: string,
-    relationships: any[],
-    relationshipFile: string,
-):Promise<string> {
+    const conversationFileNameWD = `${directoryBaseNameFromWD}.conversation.json`;
 
-    const conversationFileNameInScope = existingRelationship.conversationFile;
-
-    const conversationFilePath = join(
-        conversationDirectory,
-        conversationFileNameInScope,
-    );
-
-    // Check if conversation file stated in the relationship object passed in still exist.
-    // If it doesn't remove the entry in the relationship file.
     try {
-        await access(conversationFilePath);
-
-        // File exists
-        foundConversationFileName = conversationFileNameInScope;
-
-    } catch {
-        // Conversation file no longer exists.
-        // Remove abandoned relationship.
-        relationships = relationships.filter(
-            (relationship) =>
-                relationship.internalChatID !== internalChatID,
-        );
-
-        // No lock because we're still within the lock of the caller function
-        await writeFile(
+        const relationshipJson = await readFile(
             relationshipFile,
-            JSON.stringify(relationships, null, 2),
-            "utf-8",
-        );
-    }
-
-    // STEP 2:
-    // If the conversation file still exists, open it to confirm ICID.
-    if (foundConversationFileName !== "") {
-
-        const conversationContent = await readFile(
-            conversationFilePath,
             "utf-8",
         );
 
-        const internalChatIDPattern = new RegExp(
-            `\\[ICID:\\s*${internalChatID}\\]`,
+        const relationships: ChatSessionConversationRelationship[] =
+            JSON.parse(relationshipJson);
+
+        const relationship = relationships.find(
+            (relationship) => relationship.conversationFile === conversationFileNameWD
         );
 
-        const icidMatches = internalChatIDPattern.test(conversationContent);
-
-        // STEP 2.1:
-        // Existing relationship is valid, so return immediately.
-        if (icidMatches) {
-            conversationFileName = normalizeJsonFileName(foundConversationFileName);
-            return foundConversationFileName;
+        if(relationship) {
+            setInternalChatID(relationship.internalChatID);
+            return true;
         }
-
-        // Existing relationship is invalid.
-        // Clear it and continue with the remaining scans.
-        foundConversationFileName = "";
+    } catch {
+        // move along
     }
 
-    return foundConversationFileName;
-}
-
-/**
- * 2nd Scan: Guess work, uses LM Studio's working directory base name to hope it matches an actual conversation file
- * Proven to be unreliable I eventually seen with my testing that empty.conversation.json could be linked to something like empty-0918sd0f98uja working directory
- */
-async function scanForConversationFileThruBaseNameOfWorkingDirectory(
-    rootDirectory: string,
-    workingDirectory: string,
-    conversationDirectory: string,
-    foundConversationFileName: string,
-    userText: string,
-):Promise<string> {
-
-    try {
-        const directoryBaseNameFromWD = basename(workingDirectory);
-
-        const conversationFileName = `${directoryBaseNameFromWD}.conversation.json`;
-
-        const conversationFilePath = join(
-            conversationDirectory,
-            conversationFileName,
-        );
-
-        const conversationContent = await readFile(
-            conversationFilePath,
-            "utf-8",
-        );
-
-        const internalChatIDPattern = new RegExp(
-            `\\[ICID:\\s*${internalChatID}\\]`,
-        );
-
-        // First check for the ICID.
-        if (internalChatIDPattern.test(conversationContent)) {
-            foundConversationFileName = conversationFileName;
-        }
-
-        // If ICID did not match, check clientInput.
-        if (foundConversationFileName === "") {
-            try {
-                const conversation = JSON.parse(conversationContent);
-
-                const normalize = (s: string): string =>
-                    (s ?? "")
-                        .trim()
-                        .replace(/\s+/g, " ");
-
-                const clientInput = normalize(conversation.clientInput);
-                const input = normalize(userText);
-
-                if (
-                    clientInput.length > 0 &&
-                    input.startsWith(clientInput)
-                ) {
-                    foundConversationFileName = conversationFileName;
-                }
-                
-                // we now know the conversationfilename
-                // reverse lookup ICID if it already exist in relationship file.
-                // This will help sync the in memory ICID to what we already have on file
-                // and control if a brand new ICID is actually assigned.
-                if (foundConversationFileName !== "") {
-
-                    let relationships: any[] = [];
-
-                    // Construct the path to the conversation file
-                    const conversationDirectory = join(
-                        rootDirectory,
-                        "conversations"
-                    );
-
-                    const relationshipFile = join(
-                        conversationDirectory,
-                        "ChatSessionConversationRelationship.json",
-                    );
-
-                    try {
-                        const relationshipJson = await readFile(
-                            relationshipFile,
-                            "utf-8",
-                        );
-
-                        relationships = JSON.parse(relationshipJson);
-
-                    } catch {
-                        // File doesn't exist yet, so we'll create it in a later step.
-                    }
-
-                    const existingRelationship = relationships.find(
-                        (relationship) =>
-                            relationship.conversationFile === foundConversationFileName,
-                    );
-
-                    if (existingRelationship) {
-                        internalChatID = existingRelationship.internalChatID;
-                    }
-                }
-
-            } catch {
-                // Ignore malformed conversation content
-                // and continue to the next scan.
-            }
-        }
-
-    } catch (error: any) {
-
-        if (error?.code !== "ENOENT") {
-            console.error(error);
-        }
-
-        // Just move to next scan.
-    }
-
-    return foundConversationFileName;
-}
-
-/**
-* 3rd and 4th(nested) Scan: Literally looked through all the actual conversation files existing and made the match by spotting the ICID in memory/history
-* or the clientInput is what was currently sent to the assistant.
-* HIGHEST AUTHORITY IF WE'VE REACHED THIS SCAN FALLBACK AND GOT A MATCH
-*/
-async function scanForConversationFileThruFullConversationDirectoryScan(
-    conversationDirectory: string,
-    foundConversationFileName: string,
-    userText: string,
-):Promise<string> {
-
+    // Check clientInput of all the conversations in directory starting from the newest conversation file
+    // No authority to overwrite, just comparing the conversation file found to the relationship file
     const allConversationFiles = await findAllConversationFiles(conversationDirectory);
-
-    const internalChatIDPattern = new RegExp(
-        `\\[ICID:\\s*${internalChatID}\\]`,
-    );
 
     for (const conversationFile of allConversationFiles) {
 
-        const conversationContent = await readFile(
+        const conversationJson = await readFile(
             conversationFile,
             "utf-8",
         );
 
-        // First try to match the InternalChatID.
-        if (internalChatIDPattern.test(conversationContent)) {
-            foundConversationFileName = basename(conversationFile);
+        // Find a matching clientInput text that matches the majority of the user's input
+        // Sometimes clientInput did not fully register all of the user's input by the time we read it
+        try {
+            const conversation = JSON.parse(conversationJson);
 
+            const normalize = (s: string): string =>
+                (s ?? "")
+                    .trim()
+                    .replace(/\s+/g, " ");
+
+            const clientInput = normalize(conversation.clientInput);
+
+            const input = normalize(userText);
+
+            if (
+                clientInput.length > 0 &&
+                input.startsWith(clientInput)
+            ) {
+                // If we already expendend the processing power to confirm the conversation file name
+                // we might as well set it.
+                setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
+
+                // Check relationship file for a matching internal chat ID
+                try {
+                    const relationshipJson = await readFile(
+                        relationshipFile,
+                        "utf-8",
+                    );
+
+                    const relationships: ChatSessionConversationRelationship[] =
+                        JSON.parse(relationshipJson);
+
+                    const relationship = relationships.find(
+                        (relationship) => relationship.conversationFile === getConversationFileName()
+                    );
+
+                    if(relationship) {
+                        setInternalChatID(relationship.internalChatID);
+                        return true;
+                    }
+                } catch {
+                    // move along
+                }
+
+                break;
+            }
+        } catch {
+            // Ignore malformed conversation files and continue scanning.
+        }
+    }
+
+    return false;
+}
+
+/**
+ * Cheap check to see if a conversation file name can be derived from the working directory base name
+ * WD base name sometimes has random alphanumeric suffixes
+ */
+async function promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFile(
+    rootDirectory: string,
+    workingDirectory: string,
+):Promise<void> {
+
+    // Construct the path to the conversation folder
+    const conversationDirectory = join(
+        rootDirectory,
+        "conversations",
+    );
+
+    // Point to the relationship file
+    const relationshipFile = join(
+        conversationDirectory,
+        "ChatSessionConversationRelationship.json",
+    );
+
+    // Extract the basename of the working directory
+    const workingDirectoryBaseName = basename(workingDirectory);
+
+    // Point to the potential conversation file
+    const conversationFileName = `${workingDirectoryBaseName}.conversation.json`;
+
+    // Try to read the relationship file
+    try {
+        const relationshipJson = await readFile(
+            relationshipFile,
+            "utf-8",
+        );
+
+        const relationships: ChatSessionConversationRelationship[] =
+            JSON.parse(relationshipJson);
+
+        // Search from newest to oldest.
+        // Grab the newest relationship that matches the coversation file name
+        // There cannot be two conversations files with the same exact name in a folder
+        // At worst we are going to reuse an abandoned ICID rather than making a new one
+        for (
+            let i = relationships.length - 1;
+            i >= 0;
+            i--
+        ) {
+            const relationship = relationships[i];
+
+            if (relationship.conversationFile === conversationFileName) {
+
+                // If the conversation file is matched, set the conversation file name in memory
+                setConversationFileName(normalizeJsonFileName(conversationFileName));
+
+                // If a matching relationship is found, return its internalChatID
+                setInternalChatID(relationship.internalChatID);
+            }
+        }
+    } catch (error) {
+        console.error("Error reading relationship file:", error);
+    }
+}
+
+/**
+ * Quick check to match an internal chat ID against the relationship file to derive the conversation file name
+ */
+async function promptProcessorMatchICIDInRelationshipFile(
+    rootDirectory: string,
+): Promise<void> {
+
+    // Construct the path to the conversation folder
+    const conversationDirectory = join(
+        rootDirectory,
+        "conversations",
+    );
+
+    // Point to the relationship file
+    const relationshipFile = join(
+        conversationDirectory,
+        "ChatSessionConversationRelationship.json",
+    );
+
+    // Fetch current internal chat ID
+    const currentInternalChatID = getInternalChatID();
+
+    try {
+        const relationshipJson = await readFile(
+            relationshipFile,
+            "utf-8",
+        );
+
+        const relationships: ChatSessionConversationRelationship[] =
+            JSON.parse(relationshipJson);
+
+        const relationship = relationships.find(
+            (relationship) => relationship.internalChatID === currentInternalChatID
+        );
+
+        if (relationship) {
+
+            // If a matching relationship is found, set it's conversation file name
+            setConversationFileName(normalizeJsonFileName(relationship.conversationFile));
+        }
+
+    } catch (error: any) {
+        console.error(`Error occurred while reading relationship file: ${error.message}`);
+    }
+}
+
+/**
+ * Check to see if Working Directory base name links to a conversation file, if it does check for the ICID
+ * or clientInput in the file to validate the conversation file name
+ */
+async function promptProcessorTryWorkingDirectoryConversationFile(
+    rootDirectory: string,
+    workingDirectory: string,
+    userText: string,
+):Promise<void> {
+
+    // Construct the path to the conversation folder
+    const conversationDirectory = join(
+        rootDirectory,
+        "conversations",
+    );
+
+    // Extract the basename of the working directory
+    const workingDirectoryBaseName = basename(workingDirectory);
+
+    // Point to the potential conversation file
+    const conversationFileName = `${workingDirectoryBaseName}.conversation.json`;
+
+    // Construct the path to the conversation file
+    const conversationFilePath = join(
+        conversationDirectory,
+        conversationFileName,
+    );
+
+    const currentInternalChatID = getInternalChatID();
+
+    try {
+
+        // Parse the conversation file
+        const conversationJson = await readFile(
+            conversationFilePath,
+            "utf-8",
+        );
+
+        const conversation = JSON.parse(conversationJson);
+
+        // Check for the embedded ICID
+        const internalChatIDPattern = new RegExp(
+            `\\[ICID:\\s*${currentInternalChatID}\\]`,
+        );
+
+        if (internalChatIDPattern.test(conversationJson)) {
+            setConversationFileName(normalizeJsonFileName(conversationFileName));
+            console.log("======conversation file validated through scanForConversationFileThruBaseNameOfWorkingDirectory ICID MATCH", conversationFileName);
+            return;
+        }
+
+        // Check if the conversation file has a matching clientInput
+        const normalize = (s: string): string =>
+            (s ?? "")
+                .trim()
+                .replace(/\s+/g, " ");
+
+        const clientInput = normalize(conversation.clientInput);
+
+        const input = normalize(userText);
+
+        // Find a matching clientInput text that matches the majority of the user's input
+        // Sometimes clientInput did not fully register all of the user's input by the time we read it
+        if (
+            clientInput.length > 0 &&
+            input.startsWith(clientInput)
+        ) {
+            // console.log("======conversation file validated through scanForConversationFileThruBaseNameOfWorkingDirectory CLIENT INPUT MATCH", foundConversationFileNameInScope);
+            setConversationFileName(normalizeJsonFileName(conversationFileName));
+            return;
+        }
+
+    } catch (error: any) {
+        if (error.code !== "ENOENT") {
+            throw error;
+        }
+
+        // File doesn't exist — silently move along.
+    }
+}
+
+/**
+ * Expensive full directory scan of all conversation files from newest to oldest until a match is found between
+ * the user's input and a conversation file's clientInput or ICID marker.
+ * Highest authority to rewrite the relationship file to update or remove mismatched pairs.
+ */
+async function scanForConversationFileThruFullConversationDirectoryScan(
+    rootDirectory: string,
+    userText: string,
+):Promise<void> {
+
+    const conversationDirectory = join(
+        rootDirectory,
+        "conversations"
+    );
+
+    const allConversationFiles = await findAllConversationFiles(conversationDirectory);
+
+    const currentInternalChatID = getInternalChatID();
+
+    const internalChatIDPattern = new RegExp(
+        `\\[ICID:\\s*${currentInternalChatID}\\]`,
+    );
+
+    for (const conversationFile of allConversationFiles) {
+
+        const conversationJson = await readFile(
+            conversationFile,
+            "utf-8",
+        );
+
+        // Check for the embedded ICID
+        if (internalChatIDPattern.test(conversationJson)) {
+
+            setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
+            console.log(normalizeJsonFileName(basename(conversationFile)));
             break;
         }
 
-        // 4th SCAN:
-        // Fallback for brand-new conversations where the
-        // InternalChatID has not yet been injected.
+        // Find a matching clientInput text that matches the majority of the user's input
+        // Sometimes clientInput did not fully register all of the user's input by the time we read it
         try {
-            const conversation = JSON.parse(conversationContent);
+            const conversation = JSON.parse(conversationJson);
 
             const normalize = (s: string): string =>
                 (s ?? "")
@@ -758,7 +784,7 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
                 clientInput.length > 0 &&
                 input.startsWith(clientInput)
             ) {
-                foundConversationFileName = basename(conversationFile);
+                setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
 
                 break;
             }
@@ -768,128 +794,108 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
         }
     }
 
-    // Have an ICID in memory that matches the ICID found in this conversation file
-    // Prior relationship scan did not catch this link or had a stale ICID -> conversationfile relationship
-    // Replace the ICID in the relationshipfile to match what's in the current conversation
-    if (
-        internalChatID !== "" &&
-        foundConversationFileName !== ""
-    ) {
-        const relationshipFile = join(
-            conversationDirectory,
-            "ChatSessionConversationRelationship.json",
-        );
+    const currentConversationFileName = getConversationFileName();
 
-        try {
-            const relationshipJson = await readFile(
-                relationshipFile,
-                "utf-8",
-            );
-
-            const relationships = JSON.parse(relationshipJson);
-
-            const matchingRelationship = relationships.find(
-                (relationship: any) =>
-                    relationship.conversationFile ===
-                    foundConversationFileName,
-            );
-
-            if (
-                matchingRelationship &&
-                matchingRelationship.internalChatID !== internalChatID
-            ) {
-                matchingRelationship.internalChatID = internalChatID;
-
-                await writeFile(
-                    relationshipFile,
-                    JSON.stringify(relationships, null, 2),
-                    "utf-8",
-                );
-            }
-
-        } catch {
-            // Ignore missing or malformed relationship files.
-        }
-    }
-
-    return foundConversationFileName;
-}
-
-/**
-* Uses pre-exisiting relationships ICID if conversation file name is reused by LM Studio.
-* Refreshes it's state by putting the re-established relationship as recent by moving it to the 
-* bottom of the relationship file. Assigns repurposed ICID into memory.
-*/
-async function refreshRelationshipFile(
-    relationships: any[],
-    rootDirectory: string,
-    conversationFileName: string,
-): Promise<void> {
-    
-    // Construct the path to the conversation file
-    const conversationDirectory = join(
-        rootDirectory,
-        "conversations"
-    );
-
+    // Point to the relationship file
     const relationshipFile = join(
         conversationDirectory,
         "ChatSessionConversationRelationship.json",
     );
 
-    // Read the relationship file
+    const lockFile = `${relationshipFile}.lock`;
+
+    const functionName = "scanForConversationFileThruFullConversationDirectoryScan";
+
+    // We should now have both ICID and ConversationFileName in memory
+    // Check the relationship file if it already exists, if not we need to create it
     try {
         const relationshipJson = await readFile(
             relationshipFile,
             "utf-8",
         );
 
-        relationships = JSON.parse(relationshipJson);
+        const relationships: ChatSessionConversationRelationship[] =
+            JSON.parse(relationshipJson);
 
-    } catch {
-        // File doesn't exist yet, so we'll create it in a later step.
+        const relationship = relationships.find(
+            (relationship) => relationship.internalChatID === currentInternalChatID &&
+                relationship.conversationFile === getConversationFileName(),
+        );
+
+        // If they already perfectly match we don't need to do anything
+        if (relationship) {
+            setConversationFileName(normalizeJsonFileName(relationship.conversationFile));
+            setInternalChatID(relationship.internalChatID);
+            return;
+        }
+
+        console.log("currentConversationFileName",currentConversationFileName)
+        // If there was not a perfect match, we need to create a new one or modify an old existing relationship
+        try {
+
+            await acquireLock(lockFile, functionName);
+
+            const matchingIndexes = relationships
+                .map((relationship, index) => ({
+                    relationship,
+                    index,
+                }))
+                .filter(
+                    ({ relationship }) =>
+                        relationship.internalChatID === getInternalChatID() ||
+                        relationship.conversationFile === getConversationFileName(),
+                );
+
+            if (matchingIndexes.length > 0) {
+
+                const filteredRelationships = relationships.filter(
+                    (_, index) =>
+                        !matchingIndexes.some(
+                            (match) => match.index === index,
+                        ),
+                );
+
+                filteredRelationships.push({
+                    internalChatID: getInternalChatID(),
+                    conversationFile: getConversationFileName(),
+                });
+
+                const relationshipsToWrite =
+                    filteredRelationships.length > relationshipsLimit
+                        ? filteredRelationships.slice(-relationshipsLimit)
+                        : filteredRelationships;
+
+                await writeFile(
+                    relationshipFile,
+                    JSON.stringify(relationshipsToWrite, null, 4),
+                    "utf-8",
+                );
+
+            } else {
+
+                relationships.push({
+                    internalChatID: getInternalChatID(),
+                    conversationFile: getConversationFileName(),
+                });
+
+                const relationshipsToWrite =
+                    relationships.length > relationshipsLimit
+                        ? relationships.slice(-relationshipsLimit)
+                        : relationships;
+
+                await writeFile(
+                    relationshipFile,
+                    JSON.stringify(relationshipsToWrite, null, 4),
+                    "utf-8",
+                );
+            }
+        } finally {
+            await releaseLock(lockFile, functionName);
+        }
+
+    } catch (error: any) {
+        console.error(`scanForConversationFileThruFullConversationDirectoryScan() error: ${error.message}`);
     }
-
-    // If this conversation file already has a relationship,
-    // reuse its existing InternalChatID.
-    const existingRelationship = relationships.find(
-        (relationship) =>
-            relationship.conversationFile === conversationFileName,
-    );
-
-    if (existingRelationship) {
-        internalChatID = existingRelationship.internalChatID;
-    }
-
-    const relationshipData = {
-        internalChatID,
-        conversationFile: conversationFileName,
-    };
-
-    // Remove the old copy of this relationship.
-    relationships = relationships.filter(
-        (relationship) =>
-            relationship.internalChatID !== internalChatID &&
-            relationship.conversationFile !== conversationFileName,
-    );
-
-    // Reinsert it at the bottom so the newest relationship
-    // is always the last entry.
-    relationships.push(relationshipData);
-
-    // Keep only the newest relationships.
-    if (relationships.length > relationshipsLimit) {
-        relationships = relationships.slice(-relationshipsLimit);
-    }
-
-    await writeFile(
-        relationshipFile,
-        JSON.stringify(relationships, null, 2),
-        "utf-8",
-    );
-
-    // Update InternalChatID outer scope variable with what we just wrote in
-    internalChatID = relationshipData.internalChatID;
 }
 
 /**

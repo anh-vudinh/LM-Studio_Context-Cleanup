@@ -92,13 +92,13 @@ export const configSchematics = createConfigSchematics()
 let validatedBackupConversation: any = null;
 
 export function setValidatedBackupConversation(
-    conversation: any,
+  conversation: any,
 ): void {
-    validatedBackupConversation = conversation;
+  validatedBackupConversation = conversation;
 }
 
 export function getValidatedBackupConversation(): any {
-    return validatedBackupConversation;
+  return validatedBackupConversation;
 }
 
 // ============================================================
@@ -111,40 +111,63 @@ let saveMemoryName: string | null = null;
 let saveMemoryNumberEndRange: number | null = null;
 
 export function setSaveMemoryNumber(value: number | null): void {
-    saveMemoryNumber = value;
+  saveMemoryNumber = value;
 }
 
 export function getSaveMemoryNumber(): number | null {
-    return saveMemoryNumber;
+  return saveMemoryNumber;
 }
 
 export function setSaveMemoryCategory(value: string | null): void {
-    saveMemoryCategory = value;
+  saveMemoryCategory = value;
 }
 
 export function getSaveMemoryCategory(): string | null {
-    return saveMemoryCategory;
+  return saveMemoryCategory;
 }
 
 export function setSaveMemoryName(value: string | null): void {
-    saveMemoryName = value;
+  saveMemoryName = value;
 }
 
 export function getSaveMemoryName(): string | null {
-    return saveMemoryName;
+  return saveMemoryName;
 }
 
 export function setSaveMemoryNumberEndRange(value: number | null): void {
-    saveMemoryNumberEndRange = value;
+  saveMemoryNumberEndRange = value;
 }
 
 export function getSaveMemoryNumberEndRange(): number | null {
-    return saveMemoryNumberEndRange;
+  return saveMemoryNumberEndRange;
 }
 
 export function resetSaveMemoryParameters(): void {
-    saveMemoryNumber = null;
-    saveMemoryCategory = null;
-    saveMemoryName = null;
-    saveMemoryNumberEndRange = null;
+  saveMemoryNumber = null;
+  saveMemoryCategory = null;
+  saveMemoryName = null;
+  saveMemoryNumberEndRange = null;
+}
+
+// ============================================================
+// Conversation File Name & ICID States
+// ============================================================
+
+let conversationFileName = "";
+let internalChatID = "";
+
+export function setConversationFileName(value: string): void {
+  conversationFileName = value;
+}
+
+export function getConversationFileName(): string {
+  return conversationFileName;
+}
+
+export function setInternalChatID(value: string): void {
+  internalChatID = value;
+}
+
+export function getInternalChatID(): string {
+  return internalChatID;
 }
