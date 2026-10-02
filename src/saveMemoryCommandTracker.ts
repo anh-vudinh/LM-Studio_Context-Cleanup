@@ -5,6 +5,11 @@ import {
     getSaveMemoryNumber,
     setSaveMemoryNumberEndRange,
     resetSaveMemoryParameters,
+    getCategoryExtractRegex,
+    getNameExtractRegex,
+    getMultiSaveMemoryRegex,
+    getExitSaveMemoryRegex,
+    getSaveMemoryRegex,
 } from "./config";
 
 /**
@@ -16,20 +21,15 @@ export async function saveMemoryCommandTracker(
     userText: string
 ): Promise<void>{
 
-    const SAVE_MEMORY_REGEX =
-        /\b(?:save|sav|sve|sv|store|remember|persist)\s*(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\s*(?:message|msg)?\s*(\d+)/i;
+    const SAVE_MEMORY_REGEX = getSaveMemoryRegex();
 
-    const MULTI_SAVE_MEMORY_REGEX =
-        /\b(?:save|sav|sve|sv|store|remember|persist)\s*(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\s*(?:message|msg|messages|msgs)?\s*(\d+)\s*(?:through|thru|thrugh|thruogh|to|too)\s*(\d+)/i;
+    const MULTI_SAVE_MEMORY_REGEX = getMultiSaveMemoryRegex();
 
-    const CATEGORY_EXTRACT_REGEX =
-        /^(?:the\s+)?(?:memory|mem|mm|mmry|memry|mry|mmy|memy)?\s*(?:category|categroy|categary|categry|catgry|catagory|catgory|categoy)\b\s+(?:is\s+)?(.+)$/i;
+    const CATEGORY_EXTRACT_REGEX = getCategoryExtractRegex();
 
-    const NAME_EXTRACT_REGEX =
-        /^(?:the\s+)?(?:memory|mem|mm|mmry|memry|mry|mmy|memy)?\s*(?:name|nmae|nam|nme)\b\s+(?:is\s+)?(.+)$/i;
+    const NAME_EXTRACT_REGEX = getNameExtractRegex();
 
-    const EXIT_SAVE_MEMORY_REGEX =
-        /\bexit\b\s+(?:save|sav|sve|sv|store|remember|persist)\b\s+(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\b/i;
+    const EXIT_SAVE_MEMORY_REGEX = getExitSaveMemoryRegex();
 
     const exitMatch = userText.match(EXIT_SAVE_MEMORY_REGEX);
     

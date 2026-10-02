@@ -10,7 +10,7 @@
 
 - Tested on Windows 11 Pro 25H2 — LM Studio 0.4.24
 
-## New/Updated (10/1/2026)
+## New/Updated (10/2/2026)
 
 1) Standarized save memory regex between the this plugin and the other two persisting memories plugins.
 
@@ -19,6 +19,8 @@
 3) Redid the whole ICID and ConversationFileName scan logic flow. This was done to try and minimize the uptime or creation of a lock file for the relationship file.
 
 4) Moved ICID and CFN to a shared module-level state to conform to a similar standard as my PME plugin.
+
+5) Moved save memory regex to config.ts to conform with the style of my other plugins and simplify possible future implementations.
 
 ## Introduction
 

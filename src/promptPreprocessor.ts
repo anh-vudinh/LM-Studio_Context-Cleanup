@@ -81,6 +81,9 @@ export async function promptPreprocessor(
             keepAllMessages === true
         ) {
 
+            //------------------------------------
+            // Maybe repair a missing relationship bond with in memory data
+            //------------------------------------
             if(getInternalChatID() !== "" && getConversationFileName() !== "") {
                 // Check that the relationship exists in the relationship file.
                 // If it does not, add it. This is the extreme case user is deleting relationships directly from the file and their load bearing user message
@@ -239,7 +242,6 @@ export async function promptPreprocessor(
  *                                                                                                                                                                                                                                                                                                                                               
  *                                                                                                                                                                                                                                                                                                                            
  */
-
 
 /**
  * Try to recover InternalChatID tag if the users deleted it from chat.
@@ -792,8 +794,6 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
             // Ignore malformed conversation files and continue scanning.
         }
     }
-
-    const currentConversationFileName = getConversationFileName();
 
     // Point to the relationship file
     const relationshipFile = join(

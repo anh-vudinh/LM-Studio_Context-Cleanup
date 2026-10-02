@@ -171,3 +171,41 @@ export function setInternalChatID(value: string): void {
 export function getInternalChatID(): string {
   return internalChatID;
 }
+
+// ============================================================
+// Unified REGEX Patterns
+// ============================================================
+const SAVE_MEMORY_REGEX =
+    /\b(?:save|sav|sve|sv|store|remember|persist)\s*(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\s*(?:message|msg)?\s*(\d+)/i;
+
+const MULTI_SAVE_MEMORY_REGEX =
+    /\b(?:save|sav|sve|sv|store|remember|persist)\s*(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\s*(?:message|msg|messages|msgs)?\s*(\d+)\s*(?:through|thru|thrugh|thruogh|thorugh|thurogh|to|too)\s*(\d+)/i;
+
+const CATEGORY_EXTRACT_REGEX =
+    /^(?:the\s+)?(?:memory|mem|mm|mmry|memry|mry|mmy|memy)?\s*(?:category|categroy|categary|categry|catgry|catagory|catgory|categoy)\b\s+(?:is\s+)?(.+)$/i;
+
+const NAME_EXTRACT_REGEX =
+    /^(?:the\s+)?(?:memory|mem|mm|mmry|memry|mry|mmy|memy)?\s*(?:name|nmae|nam|nme)\b\s+(?:is\s+)?(.+)$/i;
+
+const EXIT_SAVE_MEMORY_REGEX =
+    /\bexit\b\s+(?:save|sav|sve|sv|store|remember|persist)\b\s+(?:memory|mem|mm|mmry|memry|mry|mmy|memy)\b/i;
+
+export function getSaveMemoryRegex(): RegExp {
+    return SAVE_MEMORY_REGEX;
+}
+
+export function getMultiSaveMemoryRegex(): RegExp {
+    return MULTI_SAVE_MEMORY_REGEX;
+}
+
+export function getCategoryExtractRegex(): RegExp {
+    return CATEGORY_EXTRACT_REGEX;
+}
+
+export function getNameExtractRegex(): RegExp {
+    return NAME_EXTRACT_REGEX;
+}
+
+export function getExitSaveMemoryRegex(): RegExp {
+    return EXIT_SAVE_MEMORY_REGEX;
+}
