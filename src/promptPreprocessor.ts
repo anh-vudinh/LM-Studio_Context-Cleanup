@@ -2,7 +2,7 @@ import type { ChatMessage, PromptPreprocessorController } from "@lmstudio/sdk";
 import { saveMemoryCommandTracker } from "./saveMemoryCommandTracker";
 import { startPollingToCleanupConversation } from "./cleanupConversation";
 import { acquireLock, releaseLock } from "./acquireLockFile";
-import { join, basename } from "node:path";
+import { join, basename, relative } from "node:path";
 import path from "node:path";
 import os from "os";
 
@@ -66,13 +66,112 @@ export async function promptPreprocessor(
         getSaveMemoryName() !== null;
    
     if (contextCleanup === true && saveMemoryCommandIsInProgress === false) {
+
         const userMessageCount = messages.filter(
             message => message.getRole() === "user"
         ).length + 1;
+        
+        const assistantMessageCount =
+            messages.filter(isEligibleAssistantMessage).length + 1;
 
-        const assistantMessageCount = messages.filter(
-            message => message.getRole() === "user"
-        ).length + 1;
+        //------------------------------------
+        // Maybe repair a missing relationship bond with in memory data
+        //------------------------------------
+        if(getInternalChatID() !== "" && getConversationFileName() !== "") {
+            // Check that the relationship exists in the relationship file.
+            // If it does not, add it. This is the extreme case user is deleting relationships directly from the file and their load bearing user message
+            // Two available options in the function, choose which one to enable. Each has it's pros or cons.
+            const relationshipReadded = await maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
+                lmStudioRootDirectory,
+            )
+
+            if(relationshipReadded) {
+                createNewInternalChatID = true;
+            }
+        }
+
+        // ICID UNKNOWN?
+        if (getInternalChatID() === "") {
+            // SCAN HISTORY IF FOUND ASSIGN IT TO THE INTERNAL MEMORY
+            const historyICID = await promptProcessorScanHistoryForID(messages);
+
+            //------------------------------------
+            // CONVERSATION FILE NAME KNOWN IN MEMORY BUT ICID UNKNOWN IN HISTORY (USER PROBABLY DELETED LOAD BEARING USER MESSAGE)
+            //------------------------------------
+
+            if(historyICID === "") {
+                // Recover ICID through the relationship file
+                const icidRecovered = await recoverICIDMultiStepMaybeSetConversationFileName(
+                    lmStudioRootDirectory,
+                    workingDirectory,
+                    userText,
+                );
+
+                if (icidRecovered) {
+                    createNewInternalChatID = true;
+                }
+            }
+
+            //------------------------------------
+            // ICID UNKNOWN
+            //------------------------------------
+
+            // SCAN HISTORY FAILED
+            if(getInternalChatID() === "") {
+                // SCAN IT THROUGH THE RELATIONSHIP FILE
+                // WE'VE ALSO SET THE CONVERSATION FILE NAME HERE IF WE FOUND IT ALONGSIDE 
+                // THE ICID WE MATCHED WHILE LOOKING THROUGH THE RELATIONSHIP FILE
+                await promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFile(
+                    lmStudioRootDirectory,
+                    workingDirectory,
+                );
+            }
+
+            // ICID COULD NOT BE FOUND AT ALL SO CREATE A FRESH ICID
+            if(getInternalChatID() === "") {
+                setInternalChatID(Math.floor(Date.now() / 1000).toString());
+                createNewInternalChatID = true;
+            }
+        }
+
+        //------------------------------------
+        // ICID NOW KNOWN
+        //------------------------------------
+
+        // CONVERSATION FILE NAME UKNOWN?
+        if (getConversationFileName() === "") {
+            
+            // CHECK THE RELATIONSHIP FILE
+            await promptProcessorMatchICIDInRelationshipFile(
+                lmStudioRootDirectory,
+            );
+
+            // CHECK THE WORKING DIRECTORY BASE NAME FILE
+            // CHECK FOR A EMBEDDED ICID OR MATCHING CLIENTINPUT
+            if (getConversationFileName() === "") {
+                await promptProcessorTryWorkingDirectoryConversationFile(
+                    lmStudioRootDirectory,
+                    workingDirectory,
+                    userText,
+                );
+            }
+        }
+
+        // CHECK THE FULL CONVERSATION DIRECTORY FROM NEWEST TO OLDEST
+        // CONVERSATION FILES AND CHECK FOR EMBEDDED ICID OR MATCHING CLIENTINPUT
+        if(
+            getConversationFileName() === "" || 
+            createNewInternalChatID === true
+        ) {
+            await scanForConversationFileThruFullConversationDirectoryScan(
+                lmStudioRootDirectory,
+                userText,
+            );
+        }
+
+        //----------------------------------------------------
+        // CONVERSATION FILE NAME NOW KNOWN && ICID NOW KNOWN
+        //----------------------------------------------------
 
         // Trigger every whole number
         if ((userMessageCount > 0 && 
@@ -81,121 +180,20 @@ export async function promptPreprocessor(
             keepAllMessages === true
         ) {
 
-            //------------------------------------
-            // Maybe repair a missing relationship bond with in memory data
-            //------------------------------------
-            if(getInternalChatID() !== "" && getConversationFileName() !== "") {
-                // Check that the relationship exists in the relationship file.
-                // If it does not, add it. This is the extreme case user is deleting relationships directly from the file and their load bearing user message
-                // Two available options in the function, choose which one to enable. Each has it's pros or cons.
-                const relationshipReadded = await maybeRepairRelationshipFileWithKnownICIDAndConversationFile(
-                    lmStudioRootDirectory,
-                )
-
-                if(relationshipReadded) {
-                    createNewInternalChatID = true;
-                }
-            }
-
-            // ICID UNKNOWN?
-            if (getInternalChatID() === "") {
-                // SCAN HISTORY IF FOUND ASSIGN IT TO THE INTERNAL MEMORY
-                const historyICID = await promptProcessorScanHistoryForID(messages);
-
-                //------------------------------------
-                // CONVERSATION FILE NAME KNOWN IN MEMORY BUT ICID UNKNOWN IN HISTORY (USER PROBABLY DELETED LOAD BEARING USER MESSAGE)
-                //------------------------------------
-
-                if(historyICID === "") {
-                    // Recover ICID through the relationship file
-                    const icidRecovered = await recoverICIDMultiStepMaybeSetConversationFileName(
-                        lmStudioRootDirectory,
-                        workingDirectory,
-                        userText,
-                    );
-
-                    if (icidRecovered) {
-                        createNewInternalChatID = true;
-                    }
-                }
-
-                //------------------------------------
-                // ICID UNKNOWN
-                //------------------------------------
-
-                // SCAN HISTORY FAILED
-                if(getInternalChatID() === "") {
-                    // SCAN IT THROUGH THE RELATIONSHIP FILE
-                    // WE'VE ALSO SET THE CONVERSATION FILE NAME HERE IF WE FOUND IT ALONGSIDE 
-                    // THE ICID WE MATCHED WHILE LOOKING THROUGH THE RELATIONSHIP FILE
-                    await promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFile(
-                        lmStudioRootDirectory,
-                        workingDirectory,
-                    );
-                }
-
-                // ICID COULD NOT BE FOUND AT ALL SO CREATE A FRESH ICID
-                if(getInternalChatID() === "") {
-                    setInternalChatID(Math.floor(Date.now() / 1000).toString());
-                    createNewInternalChatID = true;
-                }
-            }
-
-            //------------------------------------
-            // ICID NOW KNOWN
-            //------------------------------------
-
-            // CONVERSATION FILE NAME UKNOWN?
-            if (getConversationFileName() === "") {
-                
-                // CHECK THE RELATIONSHIP FILE
-                await promptProcessorMatchICIDInRelationshipFile(
-                    lmStudioRootDirectory,
-                );
-
-                // CHECK THE WORKING DIRECTORY BASE NAME FILE
-                // CHECK FOR A EMBEDDED ICID OR MATCHING CLIENTINPUT
-                if (getConversationFileName() === "") {
-                    await promptProcessorTryWorkingDirectoryConversationFile(
-                        lmStudioRootDirectory,
-                        workingDirectory,
-                        userText,
-                    );
-                }
-            }
-
-            // CHECK THE FULL CONVERSATION DIRECTORY FROM NEWEST TO OLDEST
-            // CONVERSATION FILES AND CHECK FOR EMBEDDED ICID OR MATCHING CLIENTINPUT
-            if(
-                getConversationFileName() === "" || 
-                createNewInternalChatID === true
-            ) {
-                await scanForConversationFileThruFullConversationDirectoryScan(
-                    lmStudioRootDirectory,
-                    userText,
-                );
-            }
-
-            //----------------------------------------------------
-            // CONVERSATION FILE NAME NOW KNOWN && ICID NOW KNOWN
-            //----------------------------------------------------
-
+            const currentConversationFileName = getConversationFileName();
+            
             // Final cleanup
-            // Fires off only with a known conversation file, requirement to access the correct file
-            if (getConversationFileName() !== "") {
-
-                void startPollingToCleanupConversation(
-                    lmStudioRootDirectory, 
-                    keepOldestN, 
-                    keepNewestN, 
-                    cleanupThinkingOnly, 
-                    keepAllMessages,
-                    createBackup,
-                    keepAllThinking,
-                    assistantMessageCount,
-                    getConversationFileName(),
-                )
-            }
+            void startPollingToCleanupConversation(
+                lmStudioRootDirectory, 
+                keepOldestN, 
+                keepNewestN, 
+                cleanupThinkingOnly, 
+                keepAllMessages,
+                createBackup,
+                keepAllThinking,
+                assistantMessageCount,
+                currentConversationFileName,
+            )
         }
     }
 
@@ -207,6 +205,7 @@ export async function promptPreprocessor(
     const currentSaveMemoryNumber = getSaveMemoryNumber();
     const currentSaveMemoryCategory = getSaveMemoryCategory();
     const currentSaveMemoryName = getSaveMemoryName();
+    const currentInternalChatID = getInternalChatID();
 
     const allRequiredFieldsKnown =
         currentSaveMemoryNumber !== null &&
@@ -218,7 +217,7 @@ export async function promptPreprocessor(
     }
 
     return createNewInternalChatID
-        ? `${userText}.                          [ICID: ${getInternalChatID()}] Ignore this ICID tag. `
+        ? `${userText}.                          [ICID: ${currentInternalChatID}] Ignore this ICID tag. `
         : userText;
 }
 
@@ -507,7 +506,14 @@ async function recoverICIDMultiStepMaybeSetConversationFileName(
             ) {
                 // If we already expendend the processing power to confirm the conversation file name
                 // we might as well set it.
-                setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
+                setConversationFileName(
+                    normalizeJsonFileName(
+                        getConversationRelativePath(
+                            conversationDirectory,
+                            conversationFile,
+                        ),
+                    ),
+                );
 
                 // Check relationship file for a matching internal chat ID
                 try {
@@ -599,7 +605,7 @@ async function promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFil
             }
         }
     } catch (error) {
-        console.error("Error reading relationship file:", error);
+        console.error("promptProcessorTryWorkingDirectoryBaseNameLookupInRelationshipFile error:", error);
     }
 }
 
@@ -645,7 +651,7 @@ async function promptProcessorMatchICIDInRelationshipFile(
         }
 
     } catch (error: any) {
-        console.error(`Error occurred while reading relationship file: ${error.message}`);
+        console.error("promptProcessorMatchICIDInRelationshipFile error:", error);
     }
 }
 
@@ -763,7 +769,14 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
         // Check for the embedded ICID
         if (internalChatIDPattern.test(conversationJson)) {
 
-            setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
+            setConversationFileName(
+                normalizeJsonFileName(
+                    getConversationRelativePath(
+                        conversationDirectory,
+                        conversationFile,
+                    ),
+                ),
+            );
 
             break;
         }
@@ -785,7 +798,14 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
                 clientInput.length > 0 &&
                 input.startsWith(clientInput)
             ) {
-                setConversationFileName(normalizeJsonFileName(basename(conversationFile)));
+                setConversationFileName(
+                    normalizeJsonFileName(
+                        getConversationRelativePath(
+                            conversationDirectory,
+                            conversationFile,
+                        ),
+                    ),
+                );
 
                 break;
             }
@@ -888,7 +908,7 @@ async function scanForConversationFileThruFullConversationDirectoryScan(
         }
 
     } catch (error: any) {
-        console.error(`scanForConversationFileThruFullConversationDirectoryScan() error: ${error.message}`);
+        console.error("promptProcessorScanForConversationFileThruFullConversationDirectoryScan error:", error);
     } finally {
         await releaseLock(lockFile, functionName);
     }
@@ -979,4 +999,28 @@ async function normalizeNumber(
 export function normalizeJsonFileName(jsonFileName: string){
 
     return jsonFileName.replace(/(\.json).*$/, "$1");
+}
+
+function getConversationRelativePath(
+    conversationsDirectory: string,
+    conversationFilePath: string,
+): string {
+    return relative(
+        conversationsDirectory,
+        conversationFilePath,
+    ).split(path.sep).join("/");
+}
+
+export function isEligibleAssistantMessage(
+    message: ChatMessage,
+): boolean {
+    if (!message.isAssistantMessage()) {
+        return false;
+    }
+
+    const content = (message as any).data?.content ?? [];
+
+    return !content.some(
+        (item: any) => item.type === "toolCallRequest",
+    );
 }
