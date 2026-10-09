@@ -94,7 +94,10 @@ export async function backupConversation(
 
         const sameConversation =
             backupConversation.name === latestConversation.name &&
-            backupFirstUserText === latestFirstUserText;
+            (
+                backupFirstUserText === latestFirstUserText ||
+                backupConversation.createdAt === latestConversation.createdAt
+            );
 
         if (!sameConversation) {
             const timestamp = Date.now();
