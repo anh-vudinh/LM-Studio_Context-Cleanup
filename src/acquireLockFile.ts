@@ -96,11 +96,11 @@ export async function acquireLock(
 
     while (true) {
 
-        if (Date.now() - startedAt >= LOCK_WAIT_TIMEOUT_MS) {
-            throw new Error(
-                `Timed out waiting for lock: ${lockFile}`,
-            );
-        }
+        // if (Date.now() - startedAt >= LOCK_WAIT_TIMEOUT_MS) {
+        //     throw new Error(
+        //         `Timed out waiting for lock: ${lockFile}`,
+        //     );
+        // }
 
         // CC already owns this lock.
         const currentFunctions = lockFileFunctions.get(lockFile);
