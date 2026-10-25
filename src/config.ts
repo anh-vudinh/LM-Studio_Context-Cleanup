@@ -15,7 +15,8 @@ export const configSchematics = createConfigSchematics()
     "keepOldestN",
     "numeric",
     {
-      displayName: "Keep first <N> messages",
+      displayName: "🥇 Keep first <N> messages",
+      hint: "The amount of beginning messages to exclude from truncation.",
       int: true,
       min: 1,
     },
@@ -25,7 +26,8 @@ export const configSchematics = createConfigSchematics()
     "keepNewestN",
     "numeric",
     {
-      displayName: "Keep last <N> messages",
+      displayName: "🥉 Keep last <N> messages",
+      hint: "The amount of ending messages to exclude from truncation. Includes the newest turn.",
       int: true,
       min: 1,
     },
@@ -35,22 +37,35 @@ export const configSchematics = createConfigSchematics()
     "cleanupCounter",
     "numeric",
     {
-      displayName: "Cleanup after every <N>th message",
+      displayName: "♻️ Cleanup after every <N>th message",
       subtitle: "-> Still considered in overrides.",
       warning: "Cleaning starts after the third message.",
-      hint: "Cleaning starts after the third message.",
+      hint: "Cleaning starts after the messages present exceed Keep First + Keep Last + Cleanup after every Nth messages.",
       int: true,
       min: 1,
     },
     3
   )
   .field(
+    "autoCleanupThreshold",
+    "numeric",
+    {
+      displayName: "🚧 OVERRIDE: Threshold to Auto Cleanup %",
+      subtitle: "Will automatically reduce chat to your Keep First and Keep Last messages settings after threshold is exceeded. Hover for Details",
+      hint: "Truncation will be delayed until after the threshold is passed. \n\n - Off = 90-100 \n - Min = 50 \n\n The chat messages will be reduced down to your Keep first <N> and Keep last <N> messages setting.",
+      int: true,
+      min: 50,
+      max: 100,
+    },
+    100
+  )
+  .field(
     "keepAllMessages",
     "boolean",
     {
-      displayName: "OVERRIDE: Cleanup But Keep All Messages",
+      displayName: "🛡️ OVERRIDE: Cleanup But Keep All Messages",
       warning: "All messages will be kept after cleanup. This ignores the truncation system.",
-      hint: "Truncation Disabled -- Cleanups performed: | Thinking | System prompt | Jinja | Tools | Preprocessed |",
+      hint: "Truncation Disabled \n\n Cleanups performed: \n - Thinking \n - System prompt \n - Jinja \n - Tools \n - Preprocessed",
     },
     false
   )
@@ -58,9 +73,9 @@ export const configSchematics = createConfigSchematics()
     "cleanupThinkingOnly",
     "boolean",
     {
-      displayName: "OVERRIDE: Cleanup Thinking Context Only",
+      displayName: "🤯 OVERRIDE: Cleanup Thinking Context Only",
       warning: "Only cleans the thinking tokens. All extra cleanups provided by default are ignored.",
-      hint: "Cleanups performed: | Thinking |",
+      hint: "Cleanups performed: \n - Thinking",
     },
     false
   )
@@ -68,9 +83,20 @@ export const configSchematics = createConfigSchematics()
     "keepAllThinking",
     "boolean",
     {
-      displayName: "OVERRIDE: Keep All Thinking Context",
+      displayName: "💡 OVERRIDE: Keep All Thinking Context",
       warning: "Performs all cleanups allowed but keeps all thinking.",
-      hint: "Cleanups performed: | System prompt | Jinja | Tools | Preprocessed |",
+      hint: "Cleanups performed: \n - System prompt \n - Jinja \n - Tools \n - Preprocessed",
+    },
+    false
+  )
+  .field(
+    "compactAMemory",
+    "boolean",
+    {
+      displayName: "🧠 Compact a Seed after Threshold Cleanup?",
+      subtitle: "XPlugin Feature: Hover for details.",
+      warning: "REQUIRES the companion plugin Persisting Memories Explicit rev12+ enabled.",
+      hint: "REQUIRES the companion plugin Persisting Memories Explicit rev12+ from LM Studio or v5.0+ from Github. \n\n This toggle will do nothing without the companion plugin enabled. \n\n Also must be using the OVERRIDE: Threshold to auto cleanup %."
     },
     false
   )
@@ -78,8 +104,8 @@ export const configSchematics = createConfigSchematics()
     "createBackup",
     "boolean",
     {
-      displayName: "EXTRA: Maintain an Uncleaned Backup of this conversation",
-      warning: "Backup saved in .lmstudio\\conversations-backup folder.",
+      displayName: "📂 EXTRA: Maintain an Uncleaned Backup of this conversation",
+      warning: "Backup saved in ~/.lmstudio/conversations-backup folder.",
       hint: "At the moment of enabling creates an exact copy. Subsequent backups only maintain the copy's freshness by append in your latest user/assistant turn."
     },
     false
@@ -89,7 +115,7 @@ export const configSchematics = createConfigSchematics()
 // ============================================================
 // Backup State
 // ============================================================
-let validatedBackupConversation: any = null;
+let validatedBackupConversation: any | null = null;
 
 export function setValidatedBackupConversation(
   conversation: any,
@@ -208,4 +234,65 @@ export function getNameExtractRegex(): RegExp {
 
 export function getExitSaveMemoryRegex(): RegExp {
     return EXIT_SAVE_MEMORY_REGEX;
+}
+
+// ============================================================
+// LM STUDIO ROOT DIRECTORY OVERRIDE
+// ============================================================
+
+let validatedLMSRootDirectory = "";
+let validatedConversationRootDirectory = "";
+let validatedBackupsRootDirectory = "";
+
+export function setValidatedLMSRootDirectory(value: string): void {
+  validatedLMSRootDirectory = value;
+}
+
+export function getValidatedLMSRootDirectory(): string {
+  return validatedLMSRootDirectory;
+}
+
+export function setValidatedConversationRootDirectory(value: string): void {
+  validatedConversationRootDirectory = value;
+}
+
+export function getValidatedConversationRootDirectory(): string {
+  return validatedConversationRootDirectory;
+}
+
+export function setValidatedBackupsRootDirectory(value: string): void {
+  validatedBackupsRootDirectory = value;
+}
+
+export function getValidatedBackupsRootDirectory(): string {
+  return validatedBackupsRootDirectory;
+}
+
+// ============================================================
+// Threshold Params Collection
+// ============================================================
+
+export interface ThresholdParamsCollection {
+  tokenCount: number | null;
+  contextLength: number | null;
+  requestThresholdCleanup: boolean;
+}
+
+let thresholdParamsCollection: ThresholdParamsCollection = {
+  tokenCount: null,
+  contextLength: null,
+  requestThresholdCleanup: false,
+};
+
+export function getThresholdParamsCollection(): ThresholdParamsCollection {
+  return { ...thresholdParamsCollection };
+}
+
+export function setThresholdParamsCollection(
+    updates: Partial<ThresholdParamsCollection>,
+): void {
+    thresholdParamsCollection = {
+      ...thresholdParamsCollection,
+      ...updates,
+    };
 }

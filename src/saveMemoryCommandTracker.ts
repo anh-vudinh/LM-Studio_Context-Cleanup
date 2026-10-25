@@ -10,7 +10,11 @@ import {
     getMultiSaveMemoryRegex,
     getExitSaveMemoryRegex,
     getSaveMemoryRegex,
+    getSaveMemoryCategory,
+    getSaveMemoryName,
 } from "./config";
+
+let earlySaveMemoryCommandResetCounter = 0;
 
 /**
  * Monitors if the user is currently in a save memory attempt. 
@@ -37,6 +41,8 @@ export async function saveMemoryCommandTracker(
 
     if (exitRequested === true) {
         resetSaveMemoryParameters();
+        earlySaveMemoryCommandResetCounter = 0;
+        return;
     }
 
     // ============================================================
@@ -141,5 +147,24 @@ export async function saveMemoryCommandTracker(
                 continue;
             }
         }
+    }
+
+    const saveMemoryCommandIsInProgress = 
+        getSaveMemoryNumber() !== null || 
+        getSaveMemoryCategory() !== null || 
+        getSaveMemoryName() !== null;
+
+    // We assume a user who is intentionally typing a save command,
+    // may take up to three messages to relay the entire command separately
+    if (saveMemoryCommandIsInProgress) {
+        
+        earlySaveMemoryCommandResetCounter++
+        
+        if(earlySaveMemoryCommandResetCounter > 3) {
+            resetSaveMemoryParameters();
+            earlySaveMemoryCommandResetCounter = 0;
+        }
+    } else {
+        earlySaveMemoryCommandResetCounter = 0;
     }
 }

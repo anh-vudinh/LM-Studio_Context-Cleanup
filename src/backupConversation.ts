@@ -1,6 +1,11 @@
 
-import { join } from "node:path";
-import { getValidatedBackupConversation, setValidatedBackupConversation } from "./config";
+import { join, dirname } from "node:path";
+
+import {
+    getValidatedBackupConversation,
+    getValidatedBackupsRootDirectory,
+    setValidatedBackupConversation
+} from "./config";
 
 import { 
     readFile, 
@@ -9,8 +14,6 @@ import {
     mkdir, 
     rename,
 } from "node:fs/promises";
-
-const validatedBackupConversation = getValidatedBackupConversation();
 
 /**
  * Makes a copy of the conversation file.
@@ -22,19 +25,19 @@ const validatedBackupConversation = getValidatedBackupConversation();
  * will be a perfect copy.
  * Added validation check to make sure they're actually the same conversation being backedup.
  * Renames any existing non-matching conversation file that has the same name as the current conversation.
+ * I am storing the json in memory so that we can directly update it there rather than read/parsing the conversation file each time.
+ * The backup copy is the source of truth after it's been initialized the first time using latestconversation's data.
  */
 export async function backupConversation(
-    rootDirectory: string,
     conversationFileName: string,
     latestJson: string,
     latestConversation: any,
+    offsetLastMessages: number, // cleanupCounter variable
 ): Promise<void> {
 
-    const backupDirectory = join(
-        rootDirectory,
-        "conversations-backup",
-    );
+    const backupDirectory = getValidatedBackupsRootDirectory();
 
+    
     await mkdir(
         backupDirectory,
         { recursive: true },
@@ -45,6 +48,26 @@ export async function backupConversation(
         conversationFileName,
     );
 
+    // Ensure the backup file's parent directory exists for nested folders
+    try {
+        await access(backupFile);
+    } catch (error: any) {
+        if (error?.code === "ENOENT") {
+            await mkdir(dirname(backupFile), { recursive: true });
+        } else {
+            throw error;
+        }
+    }
+
+    // console.log(
+    //     "conversationFileName",
+    //     conversationFileName,
+    //     "backupFile",
+    //     backupFile,
+    //     "backupDirectory",
+    //     backupDirectory,
+    // );
+    
     let backupExists = true;
 
     try {
@@ -71,6 +94,8 @@ export async function backupConversation(
     }
 
     let backupConversation: any;
+
+    const validatedBackupConversation = getValidatedBackupConversation();
 
     // Backup has not been loaded/validated into memory yet.
     if (validatedBackupConversation === null) {
@@ -99,6 +124,8 @@ export async function backupConversation(
                 backupConversation.createdAt === latestConversation.createdAt
             );
 
+        // Rename the existing conversation backup with the same name with a suffix timestamp
+        // The current conversation has priority over the base name
         if (!sameConversation) {
             const timestamp = Date.now();
 
@@ -133,21 +160,14 @@ export async function backupConversation(
     }
 
     // Append the latest two message objects.
-    const latestMessages =
-        latestConversation.messages ?? [];
+    const latestMessages = latestConversation.messages ?? [];
 
-    const backupMessages =
-        backupConversation.messages ?? [];
+    const backupMessages = backupConversation.messages ?? [];
 
-    const lastTwoMessages =
-        latestMessages.slice(-2);
+    const newMessages = latestMessages.slice(-(offsetLastMessages * 2));
+    backupMessages.push(...newMessages);
 
-    backupMessages.push(
-        ...lastTwoMessages,
-    );
-
-    backupConversation.messages =
-        backupMessages;
+    backupConversation.messages = backupMessages;
 
     await writeFile(
         backupFile,
@@ -158,4 +178,6 @@ export async function backupConversation(
         ),
         "utf-8",
     );
+
+    setValidatedBackupConversation(backupConversation);
 }

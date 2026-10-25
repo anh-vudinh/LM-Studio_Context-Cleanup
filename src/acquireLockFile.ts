@@ -7,38 +7,8 @@ import {
 //-----------------------------------------------------------
 // Lock File
 //-----------------------------------------------------------
-
-/**
- * Needed to play with my context cleanup plugin.
- * https://github.com/anh-vudinh/LM-Studio_Context-Cleanup
- * 
- * Lock ownership is tracked at two levels:
- *
- * 1. `lockFileFunctions` tracks functions in this Node.js process that
- *    currently consider themselves owners of the logical lock.
- *
- * 2. The filesystem lock file provides cross-process coordination.
- *
- * When a lock file does not exist, the first caller creates it with
- * `open(..., "wx")` and becomes an owner.
- *
- * When this process already owns the logical lock, additional functions
- * using the same lock file are allowed to join the existing ownership
- * without creating another filesystem lock file.
- *
- * A filesystem lock that already exists may belong to another process/plugin.
- * In that case we wait for it to disappear, unless its mtime exceeds the
- * stale-lock timeout, in which case we remove it and retry.
- *
- * IMPORTANT:
- * Every successful `acquireLock(lockFile, functionName)` must have a
- * corresponding `releaseLock(lockFile, functionName)`.
- *
- * Each unique lock file has it's own queue, they are not consolidated into one
- * single queue.
- */
-
 const lockFileFunctions = new Map<string, string[]>();
+const lockOwnerCounters = new Map<string, number>();
 
 export function addLockFileFunction(
     lockFile: string,
@@ -87,26 +57,37 @@ export function getLockFileFunctions(
 export async function acquireLock(
     lockFile: string,
     functionName: string,
-): Promise<void> {
+): Promise<string> {
+
+    const ownerCount = (lockOwnerCounters.get(functionName) ?? 0) + 1;
+
+    lockOwnerCounters.set(functionName, ownerCount);
+
+    const uniqueFunctionName = `${functionName}_${ownerCount}`;
+
     const LOCK_STALE_TIMEOUT_MS = 20_000;
     const LOCK_WAIT_TIMEOUT_MS = 25_000;
     const POLL_INTERVAL_MS = 100;
-
     const startedAt = Date.now();
 
     while (true) {
+        
+        // Disabled if some functions may genuinely take a long time to release their lockfile.
+        // To enable this depends when you acquire the lock. If you do it before the lastassistantmessage check,
+        // tool calls most likely will time this out. If you do it just before the writeFile and it's passed all freshness tests, it will be useful.
+        // To stop a crashed/hung process.
+        if (Date.now() - startedAt >= LOCK_WAIT_TIMEOUT_MS) {
+            throw new Error(
+                `Timed out waiting for lock: ${lockFile}`,
+            );
+        }
 
-        // if (Date.now() - startedAt >= LOCK_WAIT_TIMEOUT_MS) {
-        //     throw new Error(
-        //         `Timed out waiting for lock: ${lockFile}`,
-        //     );
-        // }
-
-        // CC already owns this lock.
+        // PM already owns this lock.
         const currentFunctions = lockFileFunctions.get(lockFile);
 
         if (currentFunctions && currentFunctions.length > 0) {
-            addLockFileFunction(lockFile, functionName);
+
+            addLockFileFunction(lockFile, uniqueFunctionName);
 
             // console.log(
             //     "===== CC ALREADY OWNS LOCK =====",
@@ -119,13 +100,13 @@ export async function acquireLock(
             //     Date.now(),
             // );
 
-            return;
+            return uniqueFunctionName;
         }
 
         try {
             const handle = await open(lockFile, "wx");
 
-            addLockFileFunction(lockFile, functionName);
+            addLockFileFunction(lockFile, uniqueFunctionName);
 
             // console.log(
             //     "===== CC CREATED LOCK =====",
@@ -140,7 +121,8 @@ export async function acquireLock(
 
             await handle.close();
 
-            return;
+            return uniqueFunctionName;
+
         } catch (error) {
             const fsError = error as NodeJS.ErrnoException;
 
@@ -157,7 +139,7 @@ export async function acquireLock(
                 functionsAfterCollision &&
                 functionsAfterCollision.length > 0
             ) {
-                addLockFileFunction(lockFile, functionName);
+                addLockFileFunction(lockFile, uniqueFunctionName);
 
                 // console.log(
                 //     "===== CC ACQUIRED LOCK AFTER COLLISION =====",
@@ -170,7 +152,7 @@ export async function acquireLock(
                 //     Date.now(),
                 // );
 
-                return;
+                return uniqueFunctionName;
             }
 
             try {
@@ -198,7 +180,7 @@ export async function acquireLock(
 
                     continue;
                 }
-                
+
             } catch (error) {
                 const fsError = error as NodeJS.ErrnoException;
 
@@ -226,19 +208,20 @@ export async function releaseLock(
     );
 
     if (!removed) {
-         console.warn(
-            "===== CC RELEASE LOCK WARNING =====",
-            lockFile,
-            "function",
-            functionName,
-            "was not registered as owning the lock",
-            "timestamp",
-            Date.now(),
-        );
+        // console.warn(
+        //     "===== CC RELEASE LOCK WARNING =====",
+        //     lockFile,
+        //     "function",
+        //     functionName,
+        //     "was not registered as owning the lock",
+        //     "timestamp",
+        //     Date.now(),
+        // );
+
+        return;
     }
 
-    const remainingFunctions =
-        getLockFileFunctions(lockFile);
+    const remainingFunctions = getLockFileFunctions(lockFile);
 
     // console.log(
     //     "===== CC FUNCTION FINISHED =====",

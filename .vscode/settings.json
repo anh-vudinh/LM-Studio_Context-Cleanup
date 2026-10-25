@@ -7,5 +7,12 @@
         "latex",
         "plaintext",
         "typescript"
+    ],
+    "eslint.useFlatConfig": true,
+    "eslint.validate": [
+        "javascript",
+        "typescript",
+        "javascriptreact",
+        "typescriptreact"
     ]
 }
