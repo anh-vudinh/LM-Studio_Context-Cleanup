@@ -153,13 +153,13 @@ export async function startPollingToCleanupConversation(
 
                     const latestJson = await readFileWithRetries(
                         conversationFile,
-                        3,
+                        2,
                         100,
                     );
 
                     const latestConversation = await readConversationWithParseRetries(
                         conversationFile,
-                        3,          // max parse attempts
+                        2,          // max parse attempts
                         100,        // retry delay
                         "throw",    // error handling action
                     );
@@ -242,13 +242,8 @@ export async function startPollingToCleanupConversation(
                 assistantUpdateHandled = false;
                 notifyMecStateChanged();
                 // console.log("========CC FINISHED")
-                if (lockOwnerName !== undefined) {
-                    await releaseLock(lockFile, lockOwnerName);
-                    lockOwnerName = undefined;
-                }
-            }
-
-            return lockOwnerName;
+                return lockOwnerName;
+            }            
         }
 
         const enoughMessagesToReduce = thresholdAutoCleanupDisabled
@@ -286,8 +281,7 @@ export async function startPollingToCleanupConversation(
                 // Enter the polling watcher for the ready file
                 await waitToConsumePMReadyFile(
                     conversationFile, 
-                    hasPersistingMemories, 
-                    functionName
+                    hasPersistingMemories,
                 );
 
                 // console.log(`${coordinatorName} has finished waiting`)
@@ -311,6 +305,11 @@ export async function startPollingToCleanupConversation(
                         await releaseLock(lockFile, lockOwnerName);
                         lockOwnerName = undefined;
                     }
+                } finally {
+                    if (lockOwnerName !== undefined) {
+                        await releaseLock(lockFile, lockOwnerName);
+                        lockOwnerName = undefined;
+                    }
                 }
                 
             },200);
@@ -323,6 +322,11 @@ export async function startPollingToCleanupConversation(
         // The persisting memories path uses a different logic so it needs a module level variable.
         let assistantUpdateHandledLocal = false;
 
+        // We are resetting the MECWQ because we do not want to start polling until there are enough messages to truncate.
+        // We reset it so we can make it pass the process orderer enforcer. If MEC3 was the actual first to
+        // become the poller for all the other MECs, it would never execute becausae MEC1/2 existed before it but their processes were killed
+        // to save processing power. We will compensate for this shortening by artificially adding the early exited MECs count to the queue snapshot for non-threshold auto cleanup.
+        // For threshold auto cleanup the count only starts after passing the threshold. So it doesn't need to care about what lead up to it, it's all fair game.
         if(!enoughMessagesToReduce) {
             // console.log("NOT READY", "REMOVED:", multiEditCoordinatorWriteQueue)
             multiEditCoordinatorWriteQueue.length = 0;
@@ -428,6 +432,7 @@ export async function startPollingToCleanupConversation(
                             if (queueIndex !== -1) {
                                 multiEditCoordinatorWriteQueue.splice(queueIndex, 1);
                             }
+
                             notifyMecStateChanged();
 
                             // console.log(
@@ -842,7 +847,9 @@ async function cleanupConversation(
     }
 }
 
-
+/**
+ * Helper to target preprocessed text field in user message object
+ */
 function getPreprocessedText(preprocessed: any): string {
     if (!Array.isArray(preprocessed?.content)) {
         return "";
@@ -910,8 +917,6 @@ function cleanUpAssistantFields(
  * otherwise you get things like message 1,2,5,6. And the persisting-memory tool
  * required the user to say save memory message 3 to target the message that was original 5.
  * Just visual cleanup for clientside use.
- * 
- * NEED TO CREATE A NEW THING FOR MY EXPLICIT VERSION
  */
 function renumberAssistantMessageMarker(
     version: any,
@@ -945,11 +950,10 @@ function renumberAssistantMessageMarker(
 async function waitToConsumePMReadyFile(
     conversationFile: string,
     shouldCoordinateWithPersistingMemories: boolean,
-    functionName: string,
 ): Promise<void>{
     const POLL_INTERVAL_MS = 100;
     const READY_FILE_STALE_AFTER_MS = 500;
-    const READY_FILE_WAIT_MAX_MS = 20_000;
+    // const READY_FILE_WAIT_MAX_MS = 20_000;
 
     const readyFile = `${conversationFile}.persisting-memories-final-write.ready`;
 
@@ -957,7 +961,7 @@ async function waitToConsumePMReadyFile(
 
     if (shouldCoordinateWithPersistingMemories) {
         
-        const readyWaitStartedAt = Date.now();
+        // const readyWaitStartedAt = Date.now();
 
         while (true) {
             // Stop waiting if max check time reached.
@@ -1004,8 +1008,8 @@ async function waitToConsumePMReadyFile(
             }
         }
 
-        // PM has completed its initial read.
-        // Removing this lets PM continue naturally into acquireLock().
+        // PM has completed its work.
+        // Now CC can begin it's work after consuming a fresh ready file
         await unlinkReadyFile(readyFile);
 
         // console.log(
@@ -1016,6 +1020,8 @@ async function waitToConsumePMReadyFile(
 
         // PM should now be progressing through its lock/work cycle.
         // Wait for its lock to disappear before CC acquires it.
+        // Was the original intention before I made PM-E remove it's lock before even producing the ready file.
+        // This is now just here for some future use maybe.
         while (true) {
             try {
                 await stat(lockFile);
@@ -1036,8 +1042,12 @@ async function waitToConsumePMReadyFile(
     }
 }
 
+/**
+ * Unlinks the ready file with error handling.
+ * Personal tests show it wasn't really needed but I just wanted to keep it.
+ */
 async function unlinkReadyFile(readyFile: string): Promise<void> {
-    const MAX_ATTEMPTS = 5;
+    const MAX_ATTEMPTS = 3;
     const RETRY_DELAY_MS = 50;
 
     for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
@@ -1062,6 +1072,10 @@ async function unlinkReadyFile(readyFile: string): Promise<void> {
     }
 }
 
+/**
+ * Retries only reading a file X number of times.
+ * Sometimes a file may be currently being written by the assistant and we get malformed json.
+ */
 export async function readFileWithRetries(
     filePath: string,
     maxAttempts: number,
@@ -1200,6 +1214,12 @@ export async function readConversationWithRecovery(
     });
 }
 
+/**
+ * All the MECs enter here and wait for the userInput to stabailize, meaning that they should not be currently
+ * typing a new message to the assistant which destabalizes the conversation file.
+ * The MEC who is last is the poller while all the previous MECs go to sleep to wait for a green light from the
+ * last MEC. Afterwards they all wake up and the main function will allow them to pass through and clear in the correct order.
+ */
 async function waitForStableClientInput(
     conversationFile: string,
     stabilityPollInterval: number,
@@ -1294,6 +1314,20 @@ async function waitForStableClientInput(
     }
 }
 
+/**
+ * Helper who updates the MEC queue's new state to the sleeping MECs
+ */
+function notifyMecStateChanged(): void {
+    const resolve = resolveMecStateChange;
+
+    // Create the next notification before waking current waiters.
+    mecStateChanged = new Promise<void>((resolveNext) => {
+        resolveMecStateChange = resolveNext;
+    });
+
+    resolve?.();
+}
+
 interface CompactionSnapshotParams {
     keepOldestN: number;
     keepNewestN: number;
@@ -1307,7 +1341,7 @@ interface CompactionSnapshot {
 }
 
 /**
- * Provides the messages snapshot as is for the 5% threshold before
+ * Provides the messages snapshot as-is for the 1% threshold before
  * the user set request. Persisting Memories Explicit will use this snapshot
  * to run through it's current functions.
  */
@@ -1380,31 +1414,12 @@ async function createACopyFileWithMessagesSnapshot(
     }
 }
 
-function notifyMecStateChanged(): void {
-    const resolve = resolveMecStateChange;
-
-    // Create the next notification before waking current waiters.
-    mecStateChanged = new Promise<void>((resolveNext) => {
-        resolveMecStateChange = resolveNext;
-    });
-
-    resolve?.();
-}
-
-function findLastAssistantMessageIndex(conversation: any): number {
-    for (let i = conversation.messages.length - 1; i >= 0; i--) {
-        const message = conversation.messages[i];
-        const selectedVersion =
-            message.versions?.[message.currentlySelected ?? 0];
-
-        if (selectedVersion?.role === "assistant") {
-            return i;
-        }
-    }
-
-    return -1;
-}
-
+/**
+ * Adds thte compaction warning before the message # appending if using PM-E
+ * If not will add it before the debug object or as the last fallback anywhere at the end of
+ * the last assistant's message.
+ * This block is not part of context so will not be pulled in by message history.
+ */
 async function appendCompactionWarning(
     conversation: any,
     replacementText: string,
@@ -1490,4 +1505,21 @@ async function appendCompactionWarning(
 
     // Insert the replacement block
     assistantVersion.steps.splice(insertIndex, 0, markerBlock);
+}
+
+/**
+ * Simple helper to target the lastest assistant message.
+ */
+function findLastAssistantMessageIndex(conversation: any): number {
+    for (let i = conversation.messages.length - 1; i >= 0; i--) {
+        const message = conversation.messages[i];
+        const selectedVersion =
+            message.versions?.[message.currentlySelected ?? 0];
+
+        if (selectedVersion?.role === "assistant") {
+            return i;
+        }
+    }
+
+    return -1;
 }

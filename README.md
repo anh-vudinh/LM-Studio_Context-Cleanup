@@ -12,18 +12,20 @@
 
 ## Introduction
 
-The **Context Cleanup** plugin gives users real-time control over auto trimming the amount of conversation history that stays tied up during a chat session, without them having to manually prune old turns or wait for the threshold where LM Studio determines the context window is full enough to begin truncation. This plugin accomplishes that by using the prompt preprocessor hook and maintaining the respective conversation file so only relevant information stays loaded — freeing up portions of the context window that was consumed by irrelevant data in the past turns. In addition, a x-plugin feature with my PM-E plugin can produce a compaction seed to store the truncated messages as a seed. These messages will be parted into multiple seeds which you can turn into memory seeds and pull back into context if needed.
+The **Context Cleanup** plugin gives users real-time control over auto trimming the amount of conversation history that stays tied up during a chat session, without them having to manually prune old turns or wait for the threshold where LM Studio determines the context window is full enough to begin truncation. This plugin accomplishes this by using the prompt preprocessor hook and maintaining the respective conversation file so only relevant information stays loaded — freeing up portions of the context window that was consumed by irrelevant and duplicated data in the past turns.
+
+In addition, a cross plugin feature with my [PM-E plugin](https://lmstudio.ai/anhuvdinh/persisting-memories-explicit) can produce a compaction seed to store the truncated messages as a seed. These messages will be parted into multiple seeds which you can then convert into memory seeds and pull back into context if needed.
 
 ## Bug Fix (10/25/2026)
-1. Backup conversation feature has been fixed. When testing it at inception I had my "cleanup after every nth message" set to 1 which always appeneded the lastest turn. Recalling memorires about the code and how I tested this feature back then I saw the problem and have fixed along with updating it's logic to work with the new polling/polling method.
+1. Backup conversation feature has been fixed. When testing it at inception I had my "cleanup after every nth message" set to 1 which always appeneded the lastest turn. Recalling memorires about the code and how I tested this feature back then I saw the problem and have fixed it along with updating it's logic to work with the new polling/polling method.
 
 ## New/Updated (10/25/2026)
 
-1. Reworked this plugin to be polling/polling too instead of polling/timeout. Now if you spam messages it can "catch up" when you eventually give it that 2 second grace period.
+1. Reworked this plugin to be polling/polling too like my PM-E plugin instead of polling/timeout. Now if you spam messages it can "catch up" when you eventually give it that 2 second grace period.
 
-2. Optimized to one single write action. Because this plugin can now recover by "catching up", all preivous operations only happen on the final state of the conversation, each unresolved cleanup function is discarded (but leaves their presence in a queue) until the last operator gets the signal to execute. All features have been been reworked to be capable of handling this new polling/polling + queue method. (sounds simple but was a real headache )
+2. Optimized unresolved turns to one single write action. Because this plugin can now recover by "catching up", all preivous operations only happen on the final state of the conversation, each unresolved cleanup function is discarded (but leaves their presence in a queue) until the last operator gets the signal to execute. All features have been reworked to be capable of handling this new polling/polling + queue method. (sounds simple but was a real headache )
 
-3. Double checked my code for any hard coded paths for windows. Seems like there was no problems to begin with and this plugin should work for all OSes.
+3. Double checked my code for any hard coded paths for Windows. Seems like there was no problems to begin with and this plugin should work for all OSes and if you're not using the default .lmstudio directory location.
 
 4. QOL: Gave the save command lock out an early exit. Originally during a save command, truncation would be disabled until it was completed or you intentionally typed `exit save memory`. Now after 3 turns regardless if you have yet to resolve the save memory command, truncation will begin again.
 
@@ -31,7 +33,7 @@ The **Context Cleanup** plugin gives users real-time control over auto trimming 
 
 6. QOL: Added emojis and better tooltips to the Plugin Control Panel. Hover for tooltips.
 
-7. If the "Compact a Seed after Threshold Cleanup" Feature is enabled, Context Cleanup will append a warning to let users know the next turn will have a delay due to PM-E creating a compaction seed at the beginning of the next turn. I tried having the model give the warning to reduce the overhead of the backend having to issue the warning, but the models after seeing the request so often would just have fun appending hallucinated compaction warnings with every reply they gave.
+7. If the 🧠 **Compact a Seed after Threshold Cleanup** Feature is enabled, Context Cleanup will append a warning to let users know the next turn will begin with a delay due to PM-E creating a compaction seed. I tried having the model give the warning to reduce the extra step of having the backend issue the warning, but models after seeing the request so often would establish a pattern and just have fun appending hallucinated compaction warnings with every reply they gave.  My first try was having this process in the background disjointed from the main flow, the problem was that if creating the compaction too over 17 seconds in the background and you're not actively keeping the chat session "awake" LM Studio would naturally disconnect plugins after it deemed the user as "idle". This would also kill the compaction creation process mid way.
   <details>
   <summary>Click to expand image of compaction warning</summary>
   <img src="screenshots\compaction-seed-next-turn.jpg" alt="Image of compaction warning">
@@ -89,10 +91,11 @@ Choose your options. The plugin will start working immediately after you send a 
 
 3. **Have a conversation as usual.** Each new user message is added to history exactly like normal; you won't notice any difference on your end.
 
-4. **Let the plugin do its work automatically.** A mandatory 2-second grace period is required immediately after the assistant finishes its response before cleanup can occur. Once trigger conditions are met, it cleans up and maintains the current conversation file behind the scenes.
+4. **Let the plugin do its work automatically.** There is a queuing system now so that users do not have to intentionally give the 2 second grace period every turn for cleanup to be resolved. Eventually when users do give the 2 second grace period, the past unresolved turns will be resolved together to clean up and maintains the current conversation file.
 
 5. **(Optional) Enable backup mode** to keep an uncleaned copy of your conversations for reference or recovery. If you enable this mid-conversation, the *first moment* you turn it on becomes the foundation of the backup's data. Leave it toggled on if you want the model to continue updating that respective backup file. The moment you turn it off, the newest message turn stops being appended.
 
+6. **(Cross Plugin Feature) Create a compaction seed** with PM-E plugin to create a compaction seed similar to a memory seed, before truncation. This way the truncated parts can be pulled in as a memory for reference. This is different from the backup mode and how you can do with it is also different.
 
 ## How It Works
 
@@ -111,7 +114,7 @@ The table below outlines every available configuration in the control panel and 
 | 🤯  **OVERRIDE: Cleanup Thinking Context Only** | Boolean · `ON / OFF` | Restricts cleanup to thinking tokens only; all other default cleanups (system prompt, Jinja templates, tools, preprocessed content) are ignored. |
 | 💡 **OVERRIDE: Keep All Thinking Context** | Boolean · `ON / OFF` | Disables thinking cleanup. All thinking will remain. Other cleanups still apply. |
 | 🧠 **Compact a Seed after Threshold Cleanup** | Boolean · `ON / OFF` | Requires the Persisting Memories EXPLICIT Plugin: Creates a copy of the messages array before truncation to pass along to the PM-E plugin. The PM-E plugin will then create a compaction seed at the beginning of the next turn after the warning message. |
-| 📂 **EXTRA: Maintain an Uncleaned Backup** | Boolean · `ON / OFF` | Keeps a backup copy of the conversation in `~/.lmstudio/conversations-backup`. The first time it is enabled, an exact 1-to-1 copy is saved; afterward only the latest user + assistant turns are appended to upkeep the current state. |
+| 📂 **EXTRA: Maintain an Uncleaned Backup** | Boolean · `ON / OFF` | Keeps a backup copy of the conversation in `~/.lmstudio/conversations-backup`. The first time it is enabled, an exact 1-to-1 copy is saved; afterward only the latest user + assistant turns are appended to upkeep the current state. Requires truncation to trigger. |
 
 **Multiple OVERRIDES are allowed to be enabled at the same time:**
 
@@ -145,3 +148,5 @@ The plugin relies on LM Studio's local storage layout and manages a few files/fo
 - Just like my Persisting Memories plugin, this plugin must also respect the 2-second time window after the assistant has finished its response before any modifications to the conversation file / chat session stick and don't get overwritten by a cached version. This 2-second window is very short — you won't even notice it. With my new implementation of the queue system even if you don't wait, any unresolved turns will join a queue and be resolved whenever the 2 second opportunity happens.
 
 - The plugin will not be able to delete the user's first message, but that does not prevent you from deleting it using LM Studio's standard "Delete this message" button tied to each chat bubble. Although I recommend the first user message be left alone if you don't want to. I've gone ahead and added the ability for the plugin to repopulate that metadata on its own in the user's new "first message." I've covered many failure points with recovery built in — just do what you wish to do how you wish to do it.
+
+- Because there's not a way to monitor or predict the token value real-time, the value can only be checked after a turn is already resolved. This means that token related backend calculations are delayed by a turn. To compensate I limited the upper auto cleanup threshold to 89% and took a proactive approach to initiating truncation 1% earlier than the requested threshold. Tokens used value is also artificially reset to 0 after any truncation occurs. This way the new turn does not retrigger functions based off an old value. LM Studio's natural flow is that token count will be reassessed at the beginning and end of every turn, so this will naturally update your token count real-time. It's not actually 0 tokens used.
