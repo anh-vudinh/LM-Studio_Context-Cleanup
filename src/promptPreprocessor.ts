@@ -1005,7 +1005,8 @@ async function findAllConversationFiles(
                 if (
                     entry.name.endsWith(".lock") ||
                     entry.name.endsWith(".ready") ||
-                    entry.name.endsWith(".copy")
+                    entry.name.endsWith(".copy") ||
+                    entry.name.endsWith(".lmstudio-temp")
                 ) {
                     continue;
                 }
